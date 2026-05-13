@@ -1,0 +1,2 @@
+"""YouBi speaker service."""
+

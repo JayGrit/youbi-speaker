@@ -1,0 +1,22 @@
+[project]
+name = "ydbi-speaker"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+  "audiostretchy",
+  "librosa",
+  "minio>=7.2.0",
+  "modelscope",
+  "mysql-connector-python>=9.0.0",
+  "numpy",
+  "pydub",
+  "soundfile",
+  "voxcpm",
+]
+
+[project.scripts]
+ydbi-speaker = "ydbi_speaker.main:main"
+
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
