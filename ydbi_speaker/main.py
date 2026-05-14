@@ -29,6 +29,9 @@ def _translation_object_candidates(task_id: str) -> tuple[str, ...]:
 def _download_vocals(row: dict, session: Path) -> Path:
     task_id = row["task_id"]
     destination = session / "input" / "vocals.wav"
+    if destination.exists() and destination.stat().st_size > 0:
+        return destination
+
     candidates = _vocals_object_candidates(task_id)
     local_vocals = row.get("audio_vocals_path") or row.get("speaker_audio_vocals_path")
     demucs_operator = db.demucs_operator_for(task_id)
