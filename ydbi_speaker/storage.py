@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import shutil
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
@@ -12,6 +13,7 @@ from .config import (
     MINIO_ACCESS_KEY,
     MINIO_BUCKET,
     MINIO_ENDPOINT,
+    MINIO_FULL_BASE_URL,
     MINIO_SECRET_KEY,
     MINIO_SECURE,
     STORAGE_BACKEND,
@@ -45,8 +47,26 @@ def _minio_client() -> Minio:
 
 def _ensure_bucket(client: Minio, bucket: str) -> None:
     if client.bucket_exists(bucket):
+        client.set_bucket_policy(bucket, _public_read_policy(bucket))
         return
     client.make_bucket(bucket)
+    client.set_bucket_policy(bucket, _public_read_policy(bucket))
+
+
+def _public_read_policy(bucket: str) -> str:
+    return json.dumps(
+        {
+            "Version": "2012-10-17",
+            "Statement": [
+                {
+                    "Effect": "Allow",
+                    "Principal": {"AWS": ["*"]},
+                    "Action": ["s3:GetObject"],
+                    "Resource": [f"arn:aws:s3:::{bucket}/*"],
+                }
+            ],
+        }
+    )
 
 
 def _strip_known_prefix(path: str) -> str:
@@ -119,6 +139,10 @@ def local_path_object_candidates(ref: str | Path) -> list[str]:
 
 def object_ref(object_name: str, bucket: str = MINIO_BUCKET) -> str:
     return f"s3://{bucket}/{object_name.lstrip('/')}"
+
+
+def object_url(object_name: str, bucket: str = MINIO_BUCKET) -> str:
+    return f"{MINIO_FULL_BASE_URL.rstrip('/')}/{bucket}/{object_name.lstrip('/')}"
 
 
 def object_prefix(prefix: str, bucket: str = MINIO_BUCKET) -> str:
@@ -218,4 +242,4 @@ def upload(local_path: Path, object_name: str, content_type: str = "application/
     _ensure_bucket(client, MINIO_BUCKET)
     normalized = object_name.lstrip("/")
     client.fput_object(MINIO_BUCKET, normalized, str(local_path), content_type=content_type)
-    return object_ref(normalized)
+    return object_url(normalized)

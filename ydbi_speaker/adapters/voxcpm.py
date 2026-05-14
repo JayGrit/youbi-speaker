@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import contextlib
+import os
 from pathlib import Path
 
 import soundfile as sf
@@ -76,11 +78,12 @@ def generate_tts_segment(
         reference_file = fallback
 
     model = _load_model()
-    wav = model.generate(
-        text=text,
-        reference_wav_path=str(reference_file),
-        cfg_value=VOXCPM_CFG_VALUE,
-        inference_timesteps=VOXCPM_INFERENCE_TIMESTEPS,
-    )
+    with open(os.devnull, "w") as devnull, contextlib.redirect_stderr(devnull):
+        wav = model.generate(
+            text=text,
+            reference_wav_path=str(reference_file),
+            cfg_value=VOXCPM_CFG_VALUE,
+            inference_timesteps=VOXCPM_INFERENCE_TIMESTEPS,
+        )
     sf.write(output_file, wav, model.tts_model.sample_rate)
     return output_file

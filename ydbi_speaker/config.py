@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import tempfile
 from pathlib import Path
 
 
@@ -19,6 +21,7 @@ MINIO_ACCESS_KEY = "minioadmin"
 MINIO_SECRET_KEY = "minioadmin"
 MINIO_BUCKET = "ydbi"
 MINIO_PUBLIC_BASE = "/minio"
+MINIO_FULL_BASE_URL = "https://120.53.92.66/minio"
 MINIO_SECURE = False
 
 if IN_CONTAINER:
@@ -30,7 +33,7 @@ else:
     MODEL_CACHE_DIR = Path("/Users/hoshuuch/Money/YouBi/data/modelscope")
     VOXCPM_MODEL_DIR = "/Users/hoshuuch/Money/YouBi/data/modelscope/OpenBMB__VoxCPM2"
 
-WORK_DIR = WORKFOLDER
+WORK_DIR = Path(os.environ.get("YDBI_SPEAKER_WORK_DIR", Path(tempfile.gettempdir()) / "ydbi" / "speaker")).expanduser()
 POLL_INTERVAL_SECONDS = 10
 
 VOXCPM_MODEL = "OpenBMB/VoxCPM2"
