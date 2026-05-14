@@ -27,7 +27,11 @@ def _model_path() -> Path:
     if VOXCPM_MODEL_DIR:
         path = Path(VOXCPM_MODEL_DIR).expanduser()
         if not path.exists():
-            raise FileNotFoundError(f"VoxCPM model directory does not exist: {path}")
+            raise FileNotFoundError(
+                "VoxCPM model directory does not exist: "
+                f"{path}. Set VOXCPM_MODEL_DIR to the local OpenBMB/VoxCPM2 directory "
+                "or run the service through start.sh so the path is derived from this checkout."
+            )
         return path
 
     raise RuntimeError(f"VoxCPM model directory is not configured; expected bundled model for {VOXCPM_MODEL}")
