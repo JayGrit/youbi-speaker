@@ -26,13 +26,31 @@ def _is_audio_segment(path: Path) -> bool:
 def _model_path() -> Path:
     if VOXCPM_MODEL_DIR:
         path = Path(VOXCPM_MODEL_DIR).expanduser()
-        if not path.exists():
-            raise FileNotFoundError(
-                "VoxCPM model directory does not exist: "
-                f"{path}. Set VOXCPM_MODEL_DIR to the local OpenBMB/VoxCPM2 directory "
-                "or run the service through start.sh so the path is derived from this checkout."
+        if path.exists():
+            return path
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            from modelscope import snapshot_download
+        except ImportError as exc:
+            raise RuntimeError(
+                "VoxCPM model is missing and modelscope is not installed. "
+                f"Install project dependencies, then rerun start.sh. Expected model path: {path}"
+            ) from exc
+
+        print(f"VoxCPM model not found; downloading {VOXCPM_MODEL} to {path}", flush=True)
+        downloaded = Path(
+            snapshot_download(
+                VOXCPM_MODEL,
+                cache_dir=str(path.parent),
+                local_dir=str(path),
             )
-        return path
+        ).expanduser()
+        if downloaded.exists():
+            return downloaded
+        if path.exists():
+            return path
+        raise FileNotFoundError(f"VoxCPM model download did not create the expected directory: {path}")
 
     raise RuntimeError(f"VoxCPM model directory is not configured; expected bundled model for {VOXCPM_MODEL}")
 

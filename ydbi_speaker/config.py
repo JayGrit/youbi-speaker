@@ -9,6 +9,7 @@ IN_CONTAINER = Path("/.dockerenv").exists()
 SERVICE_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_YDBI_ROOT = SERVICE_ROOT.parents[1] if SERVICE_ROOT.parent.name == "services" else SERVICE_ROOT
 YDBI_ROOT = Path(os.environ.get("YDBI_ROOT", DEFAULT_YDBI_ROOT)).expanduser()
+PROJECT_MODEL_CACHE_DIR = SERVICE_ROOT / "data" / "modelscope"
 
 
 def _path_from_env(name: str, default: Path | str) -> Path:
@@ -40,8 +41,8 @@ if IN_CONTAINER:
     MODEL_CACHE_DIR = _path_from_env("MODEL_CACHE_DIR", "/models/modelscope")
     VOXCPM_MODEL_DIR = _value_from_env("VOXCPM_MODEL_DIR", "/models/VoxCPM2")
 else:
-    WORKFOLDER = _path_from_env("WORKFOLDER", YDBI_ROOT / "workfolder")
-    MODEL_CACHE_DIR = _path_from_env("MODEL_CACHE_DIR", YDBI_ROOT / "data" / "modelscope")
+    WORKFOLDER = _path_from_env("WORKFOLDER", SERVICE_ROOT / "workfolder")
+    MODEL_CACHE_DIR = _path_from_env("MODEL_CACHE_DIR", PROJECT_MODEL_CACHE_DIR)
     VOXCPM_MODEL_DIR = _value_from_env("VOXCPM_MODEL_DIR", MODEL_CACHE_DIR / "OpenBMB__VoxCPM2")
 
 WORK_DIR = Path(os.environ.get("YDBI_SPEAKER_WORK_DIR", Path(tempfile.gettempdir()) / "ydbi" / "speaker")).expanduser()
