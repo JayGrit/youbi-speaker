@@ -14,6 +14,7 @@ from ..config import (
     VOXCPM_MIN_REFERENCE_MS,
     VOXCPM_MODEL,
     VOXCPM_MODEL_DIR,
+    VOXCPM_OPTIMIZE,
 )
 
 _MODEL = None
@@ -63,6 +64,7 @@ def _load_model():
         _MODEL = VoxCPM.from_pretrained(
             str(_model_path()),
             load_denoiser=VOXCPM_LOAD_DENOISER,
+            optimize=VOXCPM_OPTIMIZE,
         )
     return _MODEL
 

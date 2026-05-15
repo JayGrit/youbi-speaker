@@ -20,3 +20,6 @@ ydbi-speaker = "ydbi_speaker.main:main"
 [build-system]
 requires = ["setuptools>=69"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["ydbi_speaker", "ydbi_speaker.adapters"]

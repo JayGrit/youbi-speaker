@@ -19,6 +19,13 @@ def _path_from_env(name: str, default: Path | str) -> Path:
 def _value_from_env(name: str, default: Path | str) -> str:
     return str(Path(os.environ.get(name, str(default))).expanduser())
 
+
+def _bool_from_env(name: str, default: bool) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
 MYSQL_CONFIG = {
     "host": "120.53.92.66",
     "port": 3306,
@@ -50,6 +57,7 @@ POLL_INTERVAL_SECONDS = 10
 
 VOXCPM_MODEL = "OpenBMB/VoxCPM2"
 VOXCPM_LOAD_DENOISER = False
+VOXCPM_OPTIMIZE = _bool_from_env("VOXCPM_OPTIMIZE", False)
 VOXCPM_MIN_REFERENCE_MS = 1200
 VOXCPM_CFG_VALUE = 2.0
 VOXCPM_INFERENCE_TIMESTEPS = 10
