@@ -26,6 +26,17 @@ def _bool_from_env(name: str, default: bool) -> bool:
         return default
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
+
+def _int_from_env(name: str, default: int) -> int:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    try:
+        return int(value.strip())
+    except ValueError:
+        return default
+
+
 MYSQL_CONFIG = {
     "host": "120.53.92.66",
     "port": 3306,
@@ -54,6 +65,7 @@ else:
 
 WORK_DIR = Path(os.environ.get("YDBI_SPEAKER_WORK_DIR", Path(tempfile.gettempdir()) / "ydbi" / "speaker")).expanduser()
 POLL_INTERVAL_SECONDS = 10
+SEGMENT_RUNNING_TIMEOUT_SECONDS = _int_from_env("YDBI_SPEAKER_SEGMENT_TIMEOUT_SECONDS", 1800)
 
 VOXCPM_MODEL = "OpenBMB/VoxCPM2"
 VOXCPM_LOAD_DENOISER = False

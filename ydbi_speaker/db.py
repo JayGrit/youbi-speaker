@@ -8,7 +8,7 @@ from typing import Any
 import mysql.connector
 
 from . import video_info
-from .config import MYSQL_CONFIG
+from .config import MYSQL_CONFIG, SEGMENT_RUNNING_TIMEOUT_SECONDS
 from .stages import FAILED, READY, RUNNING, SUCCESS, stage_for
 
 HEARTBEAT_TABLE = "yd_service_heartbeat"
@@ -425,6 +425,60 @@ def mark_speaker_segment_failed(segment_id: int, message: str) -> bool:
         )
         conn.commit()
         return exhausted
+
+
+def recycle_stale_speaker_segments() -> tuple[int, list[str]]:
+    timeout_seconds = max(1, int(SEGMENT_RUNNING_TIMEOUT_SECONDS))
+    message = f"speaker segment timed out after {timeout_seconds}s; retrying"
+    exhausted_message = f"speaker segment timed out after {timeout_seconds}s; max attempts exhausted"
+    with connect() as conn:
+        cur = _dict_cursor(conn)
+        cur.execute(
+            """
+            SELECT DISTINCT task_id
+            FROM yd_speaker_segment
+            WHERE status = %s
+              AND attempt_count >= max_attempts
+              AND started_at IS NOT NULL
+              AND TIMESTAMPDIFF(SECOND, started_at, NOW()) > %s
+            """,
+            (SEGMENT_RUNNING, timeout_seconds),
+        )
+        exhausted_task_ids = [str(row["task_id"]) for row in cur.fetchall()]
+
+        cur = conn.cursor()
+        cur.execute(
+            """
+            UPDATE yd_speaker_segment
+            SET status = %s,
+                error_message = %s,
+                started_at = NULL,
+                completed_at = NULL,
+                `operator` = NULL
+            WHERE status = %s
+              AND attempt_count < max_attempts
+              AND started_at IS NOT NULL
+              AND TIMESTAMPDIFF(SECOND, started_at, NOW()) > %s
+            """,
+            (SEGMENT_READY, message, SEGMENT_RUNNING, timeout_seconds),
+        )
+        retried = cur.rowcount
+        cur.execute(
+            """
+            UPDATE yd_speaker_segment
+            SET status = %s,
+                error_message = %s,
+                completed_at = NOW()
+            WHERE status = %s
+              AND attempt_count >= max_attempts
+              AND started_at IS NOT NULL
+              AND TIMESTAMPDIFF(SECOND, started_at, NOW()) > %s
+            """,
+            (SEGMENT_FAILED, exhausted_message, SEGMENT_RUNNING, timeout_seconds),
+        )
+        failed = cur.rowcount
+        conn.commit()
+        return int(retried) + int(failed), exhausted_task_ids
 
 
 def find_finalizable_speaker_task(task_id: str | None = None) -> dict[str, Any] | None:
