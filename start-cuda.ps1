@@ -1,5 +1,5 @@
 param(
-  [string]$Device = "MY_HP",
+  [string]$Device = "LPXB_HP",
   [switch]$Optimize,
   [switch]$Background
 )
