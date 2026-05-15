@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import shutil
 import time
 from pathlib import Path
 
@@ -33,12 +34,6 @@ def _download_vocals(row: dict, session: Path) -> Path:
         return destination
 
     candidates = _vocals_object_candidates(task_id)
-    local_vocals = row.get("audio_vocals_path") or row.get("speaker_audio_vocals_path")
-    demucs_operator = db.demucs_operator_for(task_id)
-    current_operator = db.current_operator()
-    if demucs_operator == current_operator and local_vocals:
-        return storage.download(local_vocals, destination, object_candidates=candidates)
-
     vocals_url = str(row.get("audio_vocals_url") or "").strip()
     if vocals_url:
         log.info(
@@ -49,8 +44,6 @@ def _download_vocals(row: dict, session: Path) -> Path:
         )
         return storage.download(vocals_url, destination, object_candidates=candidates)
 
-    if local_vocals:
-        return storage.download(local_vocals, destination, object_candidates=candidates)
     raise FileNotFoundError(f"audio_vocals_url is missing for task: {task_id}")
 
 
@@ -111,7 +104,7 @@ def publish_segment_outputs(task_id: str, reference: Path, output: Path) -> tupl
         f"{task_id}/speaker/tts/{output.name}",
         "audio/wav",
     )
-    return str(reference), reference_url, str(output), output_url
+    return "", reference_url, "", output_url
 
 
 def finalize_task(row: dict) -> None:
@@ -159,11 +152,14 @@ def run_segment_worker() -> None:
                 log.debug("speaker segment started task=%s index=%d", task_id, item_index)
                 try:
                     reference, output = handle_segment(claimed)
-                    reference_path, reference_url, output_path, output_url = publish_segment_outputs(
-                        task_id,
-                        reference,
-                        output,
-                    )
+                    try:
+                        reference_path, reference_url, output_path, output_url = publish_segment_outputs(
+                            task_id,
+                            reference,
+                            output,
+                        )
+                    finally:
+                        shutil.rmtree(storage.task_work_dir(task_id), ignore_errors=True)
                     db.mark_speaker_segment_success(
                         int(claimed["id"]),
                         reference_path,

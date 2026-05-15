@@ -4,7 +4,7 @@ RUN apt-get update && apt-get install -y \
     ffmpeg \
     libsndfile1 \
     && rm -rf /var/lib/apt/lists/*
-RUN mkdir -p /models /work
+RUN mkdir -p /models /work/speaker
 
 WORKDIR /app
 
@@ -18,5 +18,7 @@ RUN /venv/bin/pip install --no-cache-dir --index-url https://download.pytorch.or
 RUN /venv/bin/pip install --no-cache-dir -c docker-constraints.txt .
 
 ENV PATH=/venv/bin:$PATH
+ENV YDBI_WORK_DIR=/work \
+    YDBI_SPEAKER_WORK_DIR=/work/speaker
 
 CMD ["ydbi-speaker"]

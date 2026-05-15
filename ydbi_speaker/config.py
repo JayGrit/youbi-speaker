@@ -55,15 +55,17 @@ MINIO_FULL_BASE_URL = "https://120.53.92.66/minio"
 MINIO_SECURE = False
 
 if IN_CONTAINER:
-    WORKFOLDER = _path_from_env("WORKFOLDER", "/work")
+    WORK_ROOT = _path_from_env("YDBI_WORK_DIR", "/work")
+    WORKFOLDER = _path_from_env("WORKFOLDER", WORK_ROOT)
     MODEL_CACHE_DIR = _path_from_env("MODEL_CACHE_DIR", "/models/modelscope")
     VOXCPM_MODEL_DIR = _value_from_env("VOXCPM_MODEL_DIR", "/models/VoxCPM2")
 else:
-    WORKFOLDER = _path_from_env("WORKFOLDER", SERVICE_ROOT / "workfolder")
+    WORK_ROOT = _path_from_env("YDBI_WORK_DIR", DEFAULT_YDBI_ROOT / "workfolder")
+    WORKFOLDER = _path_from_env("WORKFOLDER", WORK_ROOT)
     MODEL_CACHE_DIR = _path_from_env("MODEL_CACHE_DIR", PROJECT_MODEL_CACHE_DIR)
     VOXCPM_MODEL_DIR = _value_from_env("VOXCPM_MODEL_DIR", MODEL_CACHE_DIR / "OpenBMB__VoxCPM2")
 
-WORK_DIR = Path(os.environ.get("YDBI_SPEAKER_WORK_DIR", Path(tempfile.gettempdir()) / "ydbi" / "speaker")).expanduser()
+WORK_DIR = Path(os.environ.get("YDBI_SPEAKER_WORK_DIR", WORK_ROOT / "speaker")).expanduser()
 POLL_INTERVAL_SECONDS = 10
 SEGMENT_RUNNING_TIMEOUT_SECONDS = _int_from_env("YDBI_SPEAKER_SEGMENT_TIMEOUT_SECONDS", 1800)
 
