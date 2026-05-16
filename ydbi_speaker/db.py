@@ -259,12 +259,26 @@ def find_ready_speaker_segment() -> dict[str, Any] | None:
             FROM yd_speaker_segment seg
             JOIN yd_speaker sp ON sp.task_id = seg.task_id
             JOIN yd_video_info vi ON vi.task_id = seg.task_id
+            JOIN (
+                SELECT task_id,
+                       COUNT(*) AS total_segments,
+                       SUM(CASE WHEN status <> %s THEN 1 ELSE 0 END) AS remaining_segments
+                FROM yd_speaker_segment
+                GROUP BY task_id
+            ) stats ON stats.task_id = seg.task_id
             WHERE sp.status IN (%s, %s)
               AND seg.status = %s
-            ORDER BY seg.task_id ASC, seg.item_index ASC
+            ORDER BY
+              CASE WHEN sp.status = %s THEN 0 ELSE 1 END,
+              CASE
+                WHEN sp.status = %s THEN stats.remaining_segments
+                ELSE stats.total_segments
+              END ASC,
+              seg.task_id ASC,
+              seg.item_index ASC
             LIMIT 1
             """,
-            (READY, RUNNING, SEGMENT_READY),
+            (SEGMENT_SUCCESS, READY, RUNNING, SEGMENT_READY, RUNNING, RUNNING),
         )
         return video_info.merge_into(cur.fetchone())
 
