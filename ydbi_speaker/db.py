@@ -529,6 +529,52 @@ def find_finalizable_speaker_task(task_id: str | None = None) -> dict[str, Any] 
         return video_info.merge_into(cur.fetchone())
 
 
+def find_terminal_failed_speaker_task(task_id: str | None = None) -> dict[str, Any] | None:
+    ensure_speaker_segment_schema()
+    task_filter = "AND sp.task_id = %s" if task_id is not None else ""
+    params: list[Any] = [READY, RUNNING]
+    if task_id is not None:
+        params.append(task_id)
+    params.extend([SEGMENT_FAILED, SEGMENT_PENDING, SEGMENT_READY, SEGMENT_RUNNING])
+    with connect() as conn:
+        cur = _dict_cursor(conn)
+        cur.execute(
+            f"""
+            SELECT sp.task_id,
+                   COALESCE(
+                       (
+                         SELECT seg.error_message
+                         FROM yd_speaker_segment seg
+                         WHERE seg.task_id = sp.task_id
+                           AND seg.status = %s
+                           AND seg.error_message IS NOT NULL
+                           AND seg.error_message <> ''
+                         ORDER BY seg.item_index ASC
+                         LIMIT 1
+                       ),
+                       'one or more speaker segments failed'
+                   ) AS error_message
+            FROM yd_speaker sp
+            WHERE sp.status IN (%s, %s)
+              {task_filter}
+              AND EXISTS (
+                SELECT 1 FROM yd_speaker_segment seg
+                WHERE seg.task_id = sp.task_id
+                  AND seg.status = %s
+              )
+              AND NOT EXISTS (
+                SELECT 1 FROM yd_speaker_segment seg
+                WHERE seg.task_id = sp.task_id
+                  AND seg.status IN (%s, %s, %s)
+              )
+            ORDER BY sp.task_id ASC
+            LIMIT 1
+            """,
+            (SEGMENT_FAILED, *params),
+        )
+        return cur.fetchone()
+
+
 def mark_speaker_failed_from_segment(task_id: str, message: str) -> None:
     mark_failed("speaker", task_id, message)
 

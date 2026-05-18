@@ -9,10 +9,14 @@ from ydbi_speaker import db
 from ydbi_speaker import storage
 from ydbi_speaker.adapters.audio import split_audio_segment, split_audio_segments
 from ydbi_speaker.adapters.reference import select_global_reference
-from ydbi_speaker.adapters.voxcpm import fallback_reference, generate_tts_segment
+from ydbi_speaker.adapters.voxcpm import fallback_reference, generate_tts_segment, sanitize_target_text
 from ydbi_speaker.config import POLL_INTERVAL_SECONDS
 
 log = logging.getLogger(__name__)
+
+
+def _is_empty_target_text_error(exc: Exception) -> bool:
+    return "target text must be a non-empty string" in str(exc)
 
 
 def _vocals_object_candidates(task_id: str) -> tuple[str, ...]:
@@ -88,8 +92,23 @@ def handle_segment(row: dict) -> tuple[Path, Path]:
         int(row["end_time"]),
         session,
     )
+    target_text = sanitize_target_text(row.get("dst_text"))
+    if not target_text:
+        log.info("speaker task=%s index=%d using original audio segment", task_id, item_index)
+        return segment_reference, segment_reference
+
     fallback = fallback_reference(vocals_dir)
-    output = generate_tts_segment(str(row["dst_text"] or ""), item_index, global_reference, fallback, session)
+    try:
+        output = generate_tts_segment(target_text, item_index, global_reference, fallback, session)
+    except ValueError as exc:
+        if not _is_empty_target_text_error(exc):
+            raise
+        log.warning(
+            "speaker task=%s index=%d got empty target text from TTS; using original audio segment",
+            task_id,
+            item_index,
+        )
+        return segment_reference, segment_reference
     return segment_reference, output
 
 
@@ -128,18 +147,17 @@ def run_segment_worker() -> None:
     while True:
         try:
             db.record_service_poll("speaker")
-            recycled, exhausted_task_ids = db.recycle_stale_speaker_segments()
+            recycled, _exhausted_task_ids = db.recycle_stale_speaker_segments()
             if recycled:
                 log.warning("speaker recycled %d stale running segment(s)", recycled)
-            for task_id in exhausted_task_ids:
-                db.mark_speaker_failed_from_segment(
-                    task_id,
-                    "speaker segment timed out; max attempts exhausted",
-                )
-
             finalizable = db.find_finalizable_speaker_task()
             if finalizable:
                 finalize_task(finalizable)
+                continue
+
+            failed = db.find_terminal_failed_speaker_task()
+            if failed:
+                db.mark_speaker_failed_from_segment(failed["task_id"], failed["error_message"])
                 continue
 
             row = db.find_ready_speaker_segment()
@@ -175,7 +193,9 @@ def run_segment_worker() -> None:
                     log.exception("speaker segment failed task=%s index=%d", task_id, item_index)
                     exhausted = db.mark_speaker_segment_failed(int(claimed["id"]), str(exc))
                     if exhausted:
-                        db.mark_speaker_failed_from_segment(task_id, str(exc))
+                        failed = db.find_terminal_failed_speaker_task(task_id)
+                        if failed:
+                            db.mark_speaker_failed_from_segment(failed["task_id"], failed["error_message"])
                 continue
         except Exception:
             log.exception("speaker failed to poll segment queue; retrying in %ss", POLL_INTERVAL_SECONDS)
