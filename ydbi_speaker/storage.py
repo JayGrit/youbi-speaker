@@ -28,9 +28,13 @@ class ObjectRef:
 
 
 def task_work_dir(task_id: str) -> Path:
-    path = WORK_DIR / task_id
+    path = task_work_path(task_id)
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def task_work_path(task_id: str) -> Path:
+    return WORK_DIR / task_id
 
 
 def _endpoint_parts() -> tuple[str, bool]:

@@ -137,6 +137,7 @@ def finalize_task(row: dict) -> None:
         "tts_segments_dir": tts_dir,
     }
     db.mark_success("speaker", task_id, fields)
+    shutil.rmtree(storage.task_work_path(task_id), ignore_errors=True)
     log.info("speaker task %s finalized", task_id)
 
 
@@ -170,14 +171,11 @@ def run_segment_worker() -> None:
                 log.debug("speaker segment started task=%s index=%d", task_id, item_index)
                 try:
                     reference, output = handle_segment(claimed)
-                    try:
-                        reference_path, reference_url, output_path, output_url = publish_segment_outputs(
-                            task_id,
-                            reference,
-                            output,
-                        )
-                    finally:
-                        shutil.rmtree(storage.task_work_dir(task_id), ignore_errors=True)
+                    reference_path, reference_url, output_path, output_url = publish_segment_outputs(
+                        task_id,
+                        reference,
+                        output,
+                    )
                     db.mark_speaker_segment_success(
                         int(claimed["id"]),
                         reference_path,
