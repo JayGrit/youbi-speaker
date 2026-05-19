@@ -240,7 +240,15 @@ def find_ready(stage_name: str) -> dict[str, Any] | None:
     with connect() as conn:
         cur = _dict_cursor(conn)
         cur.execute(
-            f"SELECT * FROM {stage.table} WHERE status = %s ORDER BY task_id ASC LIMIT 1",
+            f"""
+            SELECT s.*
+            FROM {stage.table} s
+            JOIN yd_task t ON t.id = s.task_id
+            WHERE s.status = %s
+              AND t.status <> 'failed'
+            ORDER BY s.task_id ASC
+            LIMIT 1
+            """,
             (READY,),
         )
         return video_info.merge_into(cur.fetchone())
@@ -258,6 +266,7 @@ def find_ready_speaker_segment() -> dict[str, Any] | None:
                    vi.translation_json_path AS translation_json_path
             FROM yd_speaker_segment seg
             JOIN yd_speaker sp ON sp.task_id = seg.task_id
+            JOIN yd_task t ON t.id = seg.task_id
             JOIN yd_video_info vi ON vi.task_id = seg.task_id
             JOIN (
                 SELECT task_id,
@@ -268,6 +277,7 @@ def find_ready_speaker_segment() -> dict[str, Any] | None:
             ) stats ON stats.task_id = seg.task_id
             WHERE sp.status IN (%s, %s)
               AND seg.status = %s
+              AND t.status <> 'failed'
             ORDER BY
               CASE WHEN sp.status = %s THEN 0 ELSE 1 END,
               CASE
@@ -291,13 +301,16 @@ def claim_speaker_segment(segment_id: int) -> dict[str, Any] | None:
         _ensure_operator_columns(cur, ("yd_task", "yd_speaker", "yd_speaker_segment"))
         cur.execute(
             """
-            UPDATE yd_speaker_segment
-            SET status = %s,
-                attempt_count = attempt_count + 1,
-                started_at = COALESCE(started_at, NOW()),
-                error_message = NULL,
-                `operator` = %s
-            WHERE id = %s AND status = %s
+            UPDATE yd_speaker_segment seg
+            JOIN yd_task t ON t.id = seg.task_id
+            SET seg.status = %s,
+                seg.attempt_count = seg.attempt_count + 1,
+                seg.started_at = COALESCE(seg.started_at, NOW()),
+                seg.error_message = NULL,
+                seg.`operator` = %s
+            WHERE seg.id = %s
+              AND seg.status = %s
+              AND t.status <> 'failed'
             """,
             (SEGMENT_RUNNING, operator, segment_id, SEGMENT_READY),
         )
@@ -508,9 +521,11 @@ def find_finalizable_speaker_task(task_id: str | None = None) -> dict[str, Any] 
             f"""
             SELECT sp.*
             FROM yd_speaker sp
+            JOIN yd_task t ON t.id = sp.task_id
             JOIN yd_translator tr ON tr.task_id = sp.task_id
             WHERE sp.status IN (%s, %s)
               AND tr.status = %s
+              AND t.status <> 'failed'
               {task_filter}
               AND EXISTS (
                 SELECT 1 FROM yd_speaker_segment seg
@@ -555,7 +570,9 @@ def find_terminal_failed_speaker_task(task_id: str | None = None) -> dict[str, A
                        'one or more speaker segments failed'
                    ) AS error_message
             FROM yd_speaker sp
+            JOIN yd_task t ON t.id = sp.task_id
             WHERE sp.status IN (%s, %s)
+              AND t.status <> 'failed'
               {task_filter}
               AND EXISTS (
                 SELECT 1 FROM yd_speaker_segment seg
@@ -661,6 +678,11 @@ def mark_success(stage_name: str, task_id: str, outputs: Mapping[str, Any] | Non
 
     with connect() as conn:
         cur = conn.cursor()
+        cur.execute("SELECT status FROM yd_task WHERE id = %s", (task_id,))
+        task_row = cur.fetchone()
+        if not task_row or task_row[0] == "failed":
+            conn.commit()
+            return
         video_info.upsert(task_id, fields, cur)
         cur.execute(
             f"UPDATE {stage.table} SET {', '.join(assignments)} WHERE task_id = %s",
