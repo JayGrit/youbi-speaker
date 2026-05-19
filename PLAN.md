@@ -31,6 +31,8 @@ It copies `translation_json_path` and `tts_segments_dir` into `yd_combiner`.
 Poll one `yd_speaker_segment.status = 'ready'` row every
 `POLL_INTERVAL_SECONDS`, joined with `yd_speaker.status IN ('ready', 'running')`.
 Multiple speaker instances can claim different segments from the same video.
+Tasks whose translator stage is already `success` are prioritized before tasks
+that are still receiving translated segments.
 
 ## Processing
 

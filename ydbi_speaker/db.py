@@ -266,6 +266,7 @@ def find_ready_speaker_segment() -> dict[str, Any] | None:
                    vi.translation_json_path AS translation_json_path
             FROM yd_speaker_segment seg
             JOIN yd_speaker sp ON sp.task_id = seg.task_id
+            JOIN yd_translator tr ON tr.task_id = seg.task_id
             JOIN yd_task t ON t.id = seg.task_id
             JOIN yd_video_info vi ON vi.task_id = seg.task_id
             JOIN (
@@ -279,6 +280,7 @@ def find_ready_speaker_segment() -> dict[str, Any] | None:
               AND seg.status = %s
               AND t.status <> 'failed'
             ORDER BY
+              CASE WHEN tr.status = %s THEN 0 ELSE 1 END,
               CASE WHEN sp.status = %s THEN 0 ELSE 1 END,
               CASE
                 WHEN sp.status = %s THEN stats.remaining_segments
@@ -288,7 +290,7 @@ def find_ready_speaker_segment() -> dict[str, Any] | None:
               seg.item_index ASC
             LIMIT 1
             """,
-            (SEGMENT_SUCCESS, READY, RUNNING, SEGMENT_READY, RUNNING, RUNNING),
+            (SEGMENT_SUCCESS, READY, RUNNING, SEGMENT_READY, SUCCESS, RUNNING, RUNNING),
         )
         return video_info.merge_into(cur.fetchone())
 
