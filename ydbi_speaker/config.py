@@ -1,30 +1,11 @@
 from __future__ import annotations
 
-import os
-import tempfile
 from pathlib import Path
 
 
-IN_CONTAINER = Path("/.dockerenv").exists()
 SERVICE_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_YDBI_ROOT = SERVICE_ROOT.parents[1] if SERVICE_ROOT.parent.name == "services" else SERVICE_ROOT
-YDBI_ROOT = Path(os.environ.get("YDBI_ROOT", DEFAULT_YDBI_ROOT)).expanduser()
-PROJECT_MODEL_CACHE_DIR = SERVICE_ROOT / "data" / "modelscope"
-
-
-def _path_from_env(name: str, default: Path | str) -> Path:
-    return Path(os.environ.get(name, str(default))).expanduser()
-
-
-def _value_from_env(name: str, default: Path | str) -> str:
-    return str(Path(os.environ.get(name, str(default))).expanduser())
-
-
-def _bool_from_env(name: str, default: bool) -> bool:
-    value = os.environ.get(name)
-    if value is None:
-        return default
-    return value.strip().lower() in {"1", "true", "yes", "on"}
+YDBI_ROOT = DEFAULT_YDBI_ROOT
 
 
 MYSQL_CONFIG = {
@@ -44,24 +25,18 @@ MINIO_PUBLIC_BASE = "/minio"
 MINIO_FULL_BASE_URL = "https://120.53.92.66/minio"
 MINIO_SECURE = False
 
-if IN_CONTAINER:
-    WORK_ROOT = _path_from_env("YDBI_WORK_DIR", "/work")
-    WORKFOLDER = _path_from_env("WORKFOLDER", WORK_ROOT)
-    MODEL_CACHE_DIR = _path_from_env("MODEL_CACHE_DIR", "/models/modelscope")
-    VOXCPM_MODEL_DIR = _value_from_env("VOXCPM_MODEL_DIR", "/models/VoxCPM2")
-else:
-    WORK_ROOT = _path_from_env("YDBI_WORK_DIR", DEFAULT_YDBI_ROOT / "workfolder")
-    WORKFOLDER = _path_from_env("WORKFOLDER", WORK_ROOT)
-    MODEL_CACHE_DIR = _path_from_env("MODEL_CACHE_DIR", PROJECT_MODEL_CACHE_DIR)
-    VOXCPM_MODEL_DIR = _value_from_env("VOXCPM_MODEL_DIR", MODEL_CACHE_DIR / "OpenBMB__VoxCPM2")
+WORK_ROOT = Path("/work").expanduser()
+WORKFOLDER = WORK_ROOT
+MODEL_CACHE_DIR = Path("/models/modelscope").expanduser()
+VOXCPM_MODEL_DIR = str(Path("/models/VoxCPM2").expanduser())
 
-WORK_DIR = Path(os.environ.get("YDBI_SPEAKER_WORK_DIR", WORK_ROOT / "speaker")).expanduser()
+WORK_DIR = WORK_ROOT / "speaker"
 POLL_INTERVAL_SECONDS = 10
 SEGMENT_RUNNING_TIMEOUT_SECONDS = 3 * 60
 
 VOXCPM_MODEL = "OpenBMB/VoxCPM2"
 VOXCPM_LOAD_DENOISER = False
-VOXCPM_OPTIMIZE = _bool_from_env("VOXCPM_OPTIMIZE", False)
+VOXCPM_OPTIMIZE = False
 VOXCPM_MIN_REFERENCE_MS = 1200
 VOXCPM_CFG_VALUE = 2.0
 VOXCPM_INFERENCE_TIMESTEPS = 10
