@@ -442,7 +442,7 @@ def mark_speaker_segment_failed(segment_id: int, message: str) -> bool:
 
 
 def recycle_stale_speaker_segments() -> tuple[int, list[str]]:
-    timeout_seconds = max(1, int(SEGMENT_RUNNING_TIMEOUT_SECONDS))
+    timeout_seconds = SEGMENT_RUNNING_TIMEOUT_SECONDS
     message = f"speaker segment timed out after {timeout_seconds}s; retrying"
     exhausted_message = f"speaker segment timed out after {timeout_seconds}s; max attempts exhausted"
     with connect() as conn:
