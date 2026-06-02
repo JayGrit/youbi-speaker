@@ -383,24 +383,23 @@ def list_speaker_segments(task_id: str) -> list[dict[str, Any]]:
 def list_reference_segments(task_id: str) -> list[dict[str, Any]]:
     with connect() as conn:
         cur = _dict_cursor(conn)
-        for segment_type in ("fixed", "raw"):
-            try:
-                cur.execute(
-                    """
-                    SELECT task_id, item_index, text AS src_text, start_time, end_time, speaker
-                    FROM yd_asr_segment
-                    WHERE task_id = %s AND segment_type = %s
-                    ORDER BY item_index ASC
-                    """,
-                    (task_id, segment_type),
-                )
-            except mysql.connector.Error as exc:
-                if getattr(exc, "errno", None) == 1146:
-                    return []
-                raise
-            rows = list(cur.fetchall())
-            if rows:
-                return rows
+        try:
+            cur.execute(
+                """
+                SELECT task_id, item_index, text AS src_text, start_time, end_time, speaker
+                FROM yd_asr_segment
+                WHERE task_id = %s
+                ORDER BY item_index ASC
+                """,
+                (task_id,),
+            )
+        except mysql.connector.Error as exc:
+            if getattr(exc, "errno", None) == 1146:
+                return []
+            raise
+        rows = list(cur.fetchall())
+        if rows:
+            return rows
     return []
 
 
