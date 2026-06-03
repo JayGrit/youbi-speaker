@@ -31,24 +31,66 @@ def _translation_object_candidates(task_id: str) -> tuple[str, ...]:
     return ()
 
 
+def _is_false(value) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return value.strip().lower() in {"0", "false", "no", "off"}
+    return value is False or value == 0
+
+
+def _download_destination(session: Path, source_ref: str) -> Path:
+    suffix = Path(source_ref.split("?", 1)[0]).suffix or ".wav"
+    return session / "input" / f"vocals{suffix}"
+
+
+def _input_refs(row: dict) -> tuple[tuple[str, str], ...]:
+    refs: list[tuple[str, str]] = []
+    for key, label in (
+        ("audio_vocals_url", "vocals url"),
+        ("audio_vocals_path", "vocals path"),
+        ("speaker_audio_vocals_path", "speaker vocals path"),
+    ):
+        value = str(row.get(key) or "").strip()
+        if value:
+            refs.append((value, label))
+
+    if _is_false(row.get("need_separation")):
+        for key, label in (
+            ("audio_source_url", "source audio url"),
+            ("audio_source_path", "source audio path"),
+        ):
+            value = str(row.get(key) or "").strip()
+            if value:
+                refs.append((value, label))
+
+    return tuple(refs)
+
+
 def _download_vocals(row: dict, session: Path) -> Path:
     task_id = row["task_id"]
-    destination = session / "input" / "vocals.wav"
-    if destination.exists() and destination.stat().st_size > 0:
-        return destination
-
     candidates = _vocals_object_candidates(task_id)
-    vocals_url = str(row.get("audio_vocals_url") or "").strip()
-    if vocals_url:
+    errors: list[str] = []
+    for input_ref, input_label in _input_refs(row):
+        destination = _download_destination(session, input_ref)
+        if destination.exists() and destination.stat().st_size > 0:
+            return destination
+
         log.info(
-            "speaker task=%s downloading vocals from minio url=%s destination=%s",
+            "speaker task=%s downloading %s=%s destination=%s",
             task_id,
-            vocals_url,
+            input_label,
+            input_ref,
             destination,
         )
-        return storage.download(vocals_url, destination, object_candidates=candidates)
+        try:
+            return storage.download(input_ref, destination, object_candidates=candidates)
+        except FileNotFoundError as exc:
+            errors.append(str(exc))
 
-    raise FileNotFoundError(f"audio_vocals_url is missing for task: {task_id}")
+    detail = "; ".join(errors)
+    suffix = f"; {detail}" if detail else ""
+    raise FileNotFoundError(f"audio_vocals_url is missing or unavailable for task: {task_id}{suffix}")
 
 
 def handle(row: dict) -> dict[str, str]:

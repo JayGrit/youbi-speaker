@@ -24,7 +24,7 @@ def split_audio_segment(
     if output_file.exists():
         return output_file
 
-    audio = AudioSegment.from_file(vocals_file, format="wav")
+    audio = AudioSegment.from_file(vocals_file)
     start = max(0, int(start_time) - 80)
     end = min(len(audio), int(end_time) + 160)
     audio[start:end].export(output_file, format="wav")
@@ -51,7 +51,7 @@ def split_audio_segments(
     if not missing:
         return paths
 
-    audio = AudioSegment.from_file(vocals_file, format="wav")
+    audio = AudioSegment.from_file(vocals_file)
     for row in missing:
         item_index = int(row["item_index"])
         output_file = paths[item_index]
