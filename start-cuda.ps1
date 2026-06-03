@@ -64,7 +64,12 @@ function Resolve-Executable {
 }
 
 $env:FFMPEG_BINARY = Resolve-Executable "ffmpeg" "FFMPEG_BINARY"
-$env:FFPROBE_BINARY = Resolve-Executable "ffprobe" "FFPROBE_BINARY"
+try {
+  $env:FFPROBE_BINARY = Resolve-Executable "ffprobe" "FFPROBE_BINARY"
+} catch {
+  $env:FFPROBE_BINARY = ""
+  Write-Warning "ffprobe not found; continuing because speaker reads WAV files with an explicit format."
+}
 $env:DEVICE = $Device
 
 Write-Host "Starting youbi-speaker on CUDA"
@@ -72,7 +77,9 @@ Write-Host "Root: $Root"
 Write-Host "Device: $env:DEVICE"
 Write-Host "Model: $VoxCpmModelDir"
 Write-Host "FFmpeg: $env:FFMPEG_BINARY"
-Write-Host "FFprobe: $env:FFPROBE_BINARY"
+if ($env:FFPROBE_BINARY) {
+  Write-Host "FFprobe: $env:FFPROBE_BINARY"
+}
 
 if ($Background) {
   Remove-Item -LiteralPath $StdoutLog, $StderrLog -Force -ErrorAction SilentlyContinue

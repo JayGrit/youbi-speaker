@@ -80,7 +80,7 @@ def _fallback_reference(vocals_dir: Path, min_ms: int) -> Path:
     if not files:
         raise FileNotFoundError("No vocal segments were generated for VoxCPM references.")
     for path in files:
-        if len(AudioSegment.from_file(path)) >= min_ms:
+        if len(AudioSegment.from_file(path, format="wav")) >= min_ms:
             return path
     return files[0]
 
@@ -120,7 +120,7 @@ def generate_tts_segment(
 
     min_reference_ms = VOXCPM_MIN_REFERENCE_MS
     reference_file = reference
-    if not reference_file.exists() or len(AudioSegment.from_file(reference_file)) < min_reference_ms:
+    if not reference_file.exists() or len(AudioSegment.from_file(reference_file, format="wav")) < min_reference_ms:
         reference_file = fallback
 
     target_text = sanitize_target_text(text)

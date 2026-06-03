@@ -84,7 +84,7 @@ def _trim_if_long(audio: AudioSegment) -> AudioSegment:
 
 
 def _metrics(path: Path, row: Mapping[str, Any]) -> dict[str, Any]:
-    audio = _trim_if_long(AudioSegment.from_file(path))
+    audio = _trim_if_long(AudioSegment.from_file(path, format="wav"))
     duration_ms = len(audio)
     rms_db = _finite_db(audio.dBFS)
     peak_db = _finite_db(audio.max_dBFS)
@@ -159,7 +159,7 @@ def select_global_reference(
 
     selected = Path(usable[0]["path"])
     if not reference_file.exists() or reference_file.stat().st_size == 0:
-        audio = AudioSegment.from_file(selected)
+        audio = AudioSegment.from_file(selected, format="wav")
         if len(audio) > MAX_REFERENCE_MS:
             _trim_if_long(audio).export(reference_file, format="wav")
         else:

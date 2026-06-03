@@ -59,18 +59,13 @@ def _resolve_binary(binary_name: str, env_name: str) -> str | None:
 def configure_pydub_ffmpeg() -> None:
     ffmpeg = _resolve_binary("ffmpeg", "FFMPEG_BINARY")
     ffprobe = _resolve_binary("ffprobe", "FFPROBE_BINARY")
-    if not ffmpeg or not ffprobe:
-        missing = []
-        if not ffmpeg:
-            missing.append("ffmpeg")
-        if not ffprobe:
-            missing.append("ffprobe")
+    if not ffmpeg:
         raise FileNotFoundError(
-            "pydub requires ffmpeg and ffprobe, but speaker could not find: "
-            f"{', '.join(missing)}. Install FFmpeg and add its bin directory to PATH, "
-            "or set FFMPEG_BINARY and FFPROBE_BINARY to the executable paths."
+            "pydub requires ffmpeg, but speaker could not find it. Install FFmpeg and add its bin "
+            "directory to PATH, or set FFMPEG_BINARY to the executable path."
         )
 
     AudioSegment.converter = ffmpeg
     AudioSegment.ffmpeg = ffmpeg
-    AudioSegment.ffprobe = ffprobe
+    if ffprobe:
+        AudioSegment.ffprobe = ffprobe
