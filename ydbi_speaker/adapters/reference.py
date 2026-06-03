@@ -11,6 +11,10 @@ from typing import Any
 from pydub import AudioSegment
 from pydub.silence import detect_silence
 
+from .ffmpeg import configure_pydub_ffmpeg
+
+configure_pydub_ffmpeg()
+
 MIN_REFERENCE_MS = 1800
 BEST_MIN_MS = 3000
 BEST_MAX_MS = 10000

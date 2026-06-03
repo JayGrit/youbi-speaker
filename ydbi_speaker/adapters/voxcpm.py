@@ -9,6 +9,7 @@ from pathlib import Path
 import soundfile as sf
 from pydub import AudioSegment
 
+from .ffmpeg import configure_pydub_ffmpeg
 from ..config import (
     VOXCPM_CFG_VALUE,
     VOXCPM_INFERENCE_TIMESTEPS,
@@ -18,6 +19,8 @@ from ..config import (
     VOXCPM_MODEL_DIR,
     VOXCPM_OPTIMIZE,
 )
+
+configure_pydub_ffmpeg()
 
 _MODEL = None
 _WHITESPACE_RE = re.compile(r"\s+")

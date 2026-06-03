@@ -6,6 +6,10 @@ from typing import Any
 
 from pydub import AudioSegment
 
+from .ffmpeg import configure_pydub_ffmpeg
+
+configure_pydub_ffmpeg()
+
 
 def split_audio_segment(
     vocals_file: Path,
