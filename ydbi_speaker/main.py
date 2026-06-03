@@ -192,7 +192,7 @@ def run_segment_worker() -> None:
             db.record_service_poll("speaker")
             recycled, _exhausted_task_ids = db.recycle_stale_speaker_segments()
             if recycled:
-                log.warning("speaker recycled %d stale running segment(s)", recycled)
+                log.warning("speaker recycled %d stale running/failed segment(s)", recycled)
             finalizable = db.find_finalizable_speaker_task()
             if finalizable:
                 finalize_task(finalizable)

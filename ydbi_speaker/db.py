@@ -459,6 +459,7 @@ def recycle_stale_speaker_segments() -> tuple[int, list[str]]:
     timeout_seconds = SEGMENT_RUNNING_TIMEOUT_SECONDS
     message = f"speaker segment timed out after {timeout_seconds}s; retrying"
     exhausted_message = f"speaker segment timed out after {timeout_seconds}s; max attempts exhausted"
+    failed_recycle_message = "speaker failed segment recycled; retrying"
     with connect() as conn:
         cur = _dict_cursor(conn)
         cur.execute(
@@ -505,8 +506,60 @@ def recycle_stale_speaker_segments() -> tuple[int, list[str]]:
             (SEGMENT_FAILED, exhausted_message, SEGMENT_RUNNING, timeout_seconds),
         )
         failed = cur.rowcount
+        cur = _dict_cursor(conn)
+        cur.execute(
+            """
+            SELECT DISTINCT seg.task_id
+            FROM yd_speaker_segment seg
+            JOIN yd_speaker sp ON sp.task_id = seg.task_id
+            JOIN yd_task t ON t.id = seg.task_id
+            WHERE seg.status = %s
+              AND sp.status IN (%s, %s, %s)
+              AND (t.status <> 'failed' OR t.current_stage = 'speaker')
+            """,
+            (SEGMENT_FAILED, READY, RUNNING, FAILED),
+        )
+        recycled_failed_task_ids = [str(row["task_id"]) for row in cur.fetchall()]
+        cur = conn.cursor()
+        cur.execute(
+            """
+            UPDATE yd_speaker_segment seg
+            JOIN yd_speaker sp ON sp.task_id = seg.task_id
+            JOIN yd_task t ON t.id = seg.task_id
+            SET seg.status = %s,
+                seg.attempt_count = 0,
+                seg.error_message = %s,
+                seg.started_at = NULL,
+                seg.completed_at = NULL,
+                seg.`operator` = NULL
+            WHERE seg.status = %s
+              AND sp.status IN (%s, %s, %s)
+              AND (t.status <> 'failed' OR t.current_stage = 'speaker')
+            """,
+            (SEGMENT_READY, failed_recycle_message, SEGMENT_FAILED, READY, RUNNING, FAILED),
+        )
+        recycled_failed = cur.rowcount
+        if recycled_failed_task_ids:
+            placeholders = ", ".join(["%s"] * len(recycled_failed_task_ids))
+            cur.execute(
+                f"""
+                UPDATE yd_speaker sp
+                JOIN yd_task t ON t.id = sp.task_id
+                SET sp.status = %s,
+                    sp.completed_at = NULL,
+                    sp.error_message = NULL,
+                    t.status = 'running',
+                    t.current_stage = 'speaker',
+                    t.completed_at = NULL,
+                    t.error_message = NULL
+                WHERE sp.task_id IN ({placeholders})
+                  AND sp.status = %s
+                  AND t.current_stage = 'speaker'
+                """,
+                (RUNNING, *recycled_failed_task_ids, FAILED),
+            )
         conn.commit()
-        return int(retried) + int(failed), exhausted_task_ids
+        return int(retried) + int(failed) + int(recycled_failed), exhausted_task_ids
 
 
 def find_finalizable_speaker_task(task_id: str | None = None) -> dict[str, Any] | None:
