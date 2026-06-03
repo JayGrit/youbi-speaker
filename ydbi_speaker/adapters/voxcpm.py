@@ -26,6 +26,12 @@ _MODEL = None
 _WHITESPACE_RE = re.compile(r"\s+")
 
 
+def _is_complete_model_dir(path: Path) -> bool:
+    return (path / "model.safetensors").exists() and (
+        (path / "audiovae.safetensors").exists() or (path / "audiovae.pth").exists()
+    )
+
+
 def _is_audio_segment(path: Path) -> bool:
     return path.suffix == ".wav" and not path.name.startswith(".")
 
@@ -33,8 +39,10 @@ def _is_audio_segment(path: Path) -> bool:
 def _model_path() -> Path:
     if VOXCPM_MODEL_DIR:
         path = Path(VOXCPM_MODEL_DIR).expanduser()
-        if path.exists():
+        if _is_complete_model_dir(path):
             return path
+        if path.exists():
+            print(f"VoxCPM model directory is incomplete; refreshing {VOXCPM_MODEL} at {path}", flush=True)
 
         path.parent.mkdir(parents=True, exist_ok=True)
         try:
@@ -53,11 +61,11 @@ def _model_path() -> Path:
                 local_dir=str(path),
             )
         ).expanduser()
-        if downloaded.exists():
+        if _is_complete_model_dir(downloaded):
             return downloaded
-        if path.exists():
+        if _is_complete_model_dir(path):
             return path
-        raise FileNotFoundError(f"VoxCPM model download did not create the expected directory: {path}")
+        raise FileNotFoundError(f"VoxCPM model download did not create a complete model directory: {path}")
 
     raise RuntimeError(f"VoxCPM model directory is not configured; expected bundled model for {VOXCPM_MODEL}")
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 
@@ -25,10 +26,30 @@ MINIO_PUBLIC_BASE = "/minio"
 MINIO_FULL_BASE_URL = "https://120.53.92.66/minio"
 MINIO_SECURE = False
 
-WORK_ROOT = Path("/work").expanduser()
+def _path_from_env(name: str, default: Path) -> Path:
+    value = os.getenv(name)
+    if value:
+        return Path(value).expanduser()
+    return default.expanduser()
+
+
+def _local_work_root() -> Path:
+    explicit = os.getenv("WORKFOLDER") or os.getenv("YDBI_WORK_ROOT")
+    if explicit:
+        return Path(explicit).expanduser()
+
+    docker_work = Path("/work")
+    if docker_work.exists() and os.access(docker_work, os.W_OK):
+        return docker_work
+
+    return YDBI_ROOT / "workfolder"
+
+
+WORK_ROOT = _local_work_root()
 WORKFOLDER = WORK_ROOT
-MODEL_CACHE_DIR = Path("/models/modelscope").expanduser()
-VOXCPM_MODEL_DIR = str(Path("/models/VoxCPM2").expanduser())
+
+MODEL_CACHE_DIR = _path_from_env("MODELSCOPE_CACHE", SERVICE_ROOT / "model")
+VOXCPM_MODEL_DIR = str(_path_from_env("VOXCPM_MODEL_DIR", MODEL_CACHE_DIR / "VoxCPM2"))
 
 WORK_DIR = WORK_ROOT / "speaker"
 POLL_INTERVAL_SECONDS = 10

@@ -5,6 +5,7 @@ __pycache__/
 .venv/
 .idea/
 models/
+model/
 data/
 data.zip
 workfolder/
