@@ -50,19 +50,7 @@ def _quote_identifier(identifier: str) -> str:
 
 
 def _ensure_columns(cur, table: str, columns: Mapping[str, str]) -> None:
-    cur.execute(
-        """
-        SELECT column_name
-        FROM information_schema.columns
-        WHERE table_schema = DATABASE() AND table_name = %s
-        """,
-        (table,),
-    )
-    existing = {_row_value(row) for row in cur.fetchall()}
-    for name, definition in columns.items():
-        if name not in existing:
-            cur.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
-
+    return
 
 def _heartbeat_device_column() -> str | None:
     device = os.environ.get("DEVICE", "").strip() or "Macbook Air M4"
@@ -90,75 +78,11 @@ def demucs_operator_for(task_id: str) -> str | None:
 
 
 def _ensure_operator_columns(cur, tables: tuple[str, ...]) -> None:
-    for table in tables:
-        cur.execute(
-            """
-            SELECT COUNT(*)
-            FROM INFORMATION_SCHEMA.TABLES
-            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s
-            """,
-            (table,),
-        )
-        if _row_value(cur.fetchone()) == 0:
-            continue
-
-        cur.execute(
-            """
-            SELECT COUNT(*)
-            FROM INFORMATION_SCHEMA.COLUMNS
-            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s AND COLUMN_NAME = %s
-            """,
-            (table, OPERATOR_COLUMN),
-        )
-        if _row_value(cur.fetchone()) > 0:
-            continue
-
-        try:
-            cur.execute(
-                f"ALTER TABLE {_quote_identifier(table)} "
-                f"ADD COLUMN {_quote_identifier(OPERATOR_COLUMN)} {OPERATOR_COLUMN_DEFINITION}"
-            )
-        except mysql.connector.Error as exc:
-            if getattr(exc, "errno", None) != 1060:
-                raise
+    return
 
 
 def ensure_service_heartbeat_schema() -> None:
     global _heartbeat_schema_ready
-    if _heartbeat_schema_ready:
-        return
-
-    columns_sql = ",\n                ".join(
-        f"{_quote_identifier(column)} DATETIME NULL" for column in HEARTBEAT_DEVICE_COLUMNS
-    )
-    with connect() as conn:
-        cur = conn.cursor()
-        cur.execute(
-            f"""
-            CREATE TABLE IF NOT EXISTS {HEARTBEAT_TABLE} (
-                service_name VARCHAR(64) NOT NULL PRIMARY KEY,
-                {columns_sql},
-                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-            )
-            """
-        )
-        cur.execute(
-            """
-            SELECT COLUMN_NAME
-            FROM INFORMATION_SCHEMA.COLUMNS
-            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s
-            """,
-            (HEARTBEAT_TABLE,),
-        )
-        existing = {_row_value(row) for row in cur.fetchall()}
-        for column in HEARTBEAT_DEVICE_COLUMNS:
-            if column not in existing:
-                try:
-                    cur.execute(f"ALTER TABLE {HEARTBEAT_TABLE} ADD COLUMN {_quote_identifier(column)} DATETIME NULL")
-                except mysql.connector.Error as exc:
-                    if getattr(exc, "errno", None) != 1060:
-                        raise
-        conn.commit()
     _heartbeat_schema_ready = True
 
 
@@ -183,46 +107,7 @@ def record_service_poll(stage_name: str) -> None:
 
 
 def ensure_speaker_segment_schema() -> None:
-    with connect() as conn:
-        cur = conn.cursor()
-        cur.execute(
-            """
-            CREATE TABLE IF NOT EXISTS yd_speaker_segment (
-              id BIGINT PRIMARY KEY AUTO_INCREMENT,
-              task_id VARCHAR(64) NOT NULL,
-              item_index INT NOT NULL,
-              status VARCHAR(32) NOT NULL DEFAULT 'pending',
-              src_text MEDIUMTEXT,
-              dst_text MEDIUMTEXT NOT NULL,
-              src_lang VARCHAR(16),
-              dst_lang VARCHAR(16),
-              start_time INT NOT NULL,
-              end_time INT NOT NULL,
-              speaker VARCHAR(64),
-              reference_wav_path TEXT,
-              reference_wav_url TEXT,
-              tts_wav_path TEXT,
-              tts_wav_url TEXT,
-              actual_start_time INT,
-              actual_end_time INT,
-              speed_ratio DOUBLE,
-              attempt_count INT NOT NULL DEFAULT 0,
-              max_attempts INT NOT NULL DEFAULT 3,
-              error_message TEXT,
-              created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-              started_at DATETIME,
-              completed_at DATETIME,
-              `operator` VARCHAR(128),
-              updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-              UNIQUE KEY uk_speaker_segment (task_id, item_index),
-              KEY idx_speaker_segment_ready (status, task_id, item_index)
-            )
-            """
-        )
-        _ensure_columns(cur, "yd_speaker_segment", SPEAKER_SEGMENT_EXTRA_COLUMNS)
-        _ensure_operator_columns(cur, ("yd_speaker_segment",))
-        conn.commit()
-
+    return
 
 def get_task(task_id: str) -> dict[str, Any] | None:
     with connect() as conn:
