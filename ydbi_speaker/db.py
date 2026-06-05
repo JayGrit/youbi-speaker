@@ -401,6 +401,10 @@ def recycle_stale_speaker_segments() -> tuple[int, list[str]]:
             WHERE seg.status = %s
               AND sp.status IN (%s, %s, %s)
               AND (t.status <> 'failed' OR t.current_stage = 'speaker')
+              AND (
+                  seg.error_message IS NULL
+                  OR seg.error_message NOT LIKE 'translator api task failed:%%'
+              )
             """,
             (SEGMENT_FAILED, READY, RUNNING, FAILED),
         )
@@ -420,6 +424,10 @@ def recycle_stale_speaker_segments() -> tuple[int, list[str]]:
             WHERE seg.status = %s
               AND sp.status IN (%s, %s, %s)
               AND (t.status <> 'failed' OR t.current_stage = 'speaker')
+              AND (
+                  seg.error_message IS NULL
+                  OR seg.error_message NOT LIKE 'translator api task failed:%%'
+              )
             """,
             (SEGMENT_READY, failed_recycle_message, SEGMENT_FAILED, READY, RUNNING, FAILED),
         )
