@@ -63,6 +63,13 @@ def _staged_column_exists_cur(cur, table: str, column: str) -> bool:
 def _ensure_staged_account_columns_cur(cur) -> bool:
     if not _staged_table_exists_cur(cur, UPLOADER_ACCOUNT_TABLE):
         return False
+    if not _staged_column_exists_cur(cur, UPLOADER_ACCOUNT_TABLE, "downloader_max_staged_count"):
+        cur.execute(
+            f"""
+            ALTER TABLE {UPLOADER_ACCOUNT_TABLE}
+            ADD COLUMN downloader_max_staged_count INT NOT NULL DEFAULT 5
+            """
+        )
     if not _staged_column_exists_cur(cur, UPLOADER_ACCOUNT_TABLE, "staged_running_count"):
         cur.execute(
             f"""
@@ -255,6 +262,7 @@ def find_ready_speaker_segment() -> dict[str, Any] | None:
     video_info.ensure_schema()
     with connect() as conn:
         cur = _dict_cursor(conn)
+        _ensure_staged_account_columns_cur(cur)
         cur.execute(
             """
             SELECT seg.*,
@@ -272,11 +280,27 @@ def find_ready_speaker_segment() -> dict[str, Any] | None:
                 FROM yd_speaker_segment
                 GROUP BY task_id
             ) stats ON stats.task_id = seg.task_id
+            LEFT JOIN (
+                SELECT submission.task_id,
+                       MAX(
+                           CASE
+                             WHEN account.cooldown_waiting_count < account.downloader_max_staged_count
+                             THEN 1
+                             ELSE 0
+                           END
+                       ) AS has_cooldown_capacity
+                FROM downloader_submission submission
+                JOIN uploader_account account ON account.account_key = submission.type
+                WHERE submission.status = 'success'
+                  AND NULLIF(submission.type, '') IS NOT NULL
+                GROUP BY submission.task_id
+            ) account_priority ON account_priority.task_id = seg.task_id
             WHERE sp.status IN (%s, %s)
               AND seg.status = %s
               AND t.status <> 'failed'
             ORDER BY
               CASE WHEN tr.status = %s THEN 0 ELSE 1 END,
+              CASE WHEN COALESCE(account_priority.has_cooldown_capacity, 0) = 1 THEN 0 ELSE 1 END,
               CASE WHEN sp.status = %s THEN 0 ELSE 1 END,
               CASE
                 WHEN sp.status = %s THEN stats.remaining_segments
