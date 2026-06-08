@@ -288,7 +288,14 @@ def find_ready_speaker_segment() -> dict[str, Any] | None:
                              THEN 1
                              ELSE 0
                            END
-                       ) AS has_cooldown_capacity
+                       ) AS has_cooldown_capacity,
+                       MIN(
+                           CASE
+                             WHEN account.cooldown_waiting_count < account.downloader_max_staged_count
+                             THEN account.cooldown_waiting_count
+                             ELSE NULL
+                           END
+                       ) AS min_available_cooldown
                 FROM downloader_submission submission
                 JOIN uploader_account account ON account.account_key = submission.type
                 WHERE submission.status = 'success'
@@ -301,6 +308,7 @@ def find_ready_speaker_segment() -> dict[str, Any] | None:
             ORDER BY
               CASE WHEN tr.status = %s THEN 0 ELSE 1 END,
               CASE WHEN COALESCE(account_priority.has_cooldown_capacity, 0) = 1 THEN 0 ELSE 1 END,
+              account_priority.min_available_cooldown ASC,
               CASE WHEN sp.status = %s THEN 0 ELSE 1 END,
               CASE
                 WHEN sp.status = %s THEN stats.remaining_segments
