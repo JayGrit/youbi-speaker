@@ -170,12 +170,10 @@ def publish_segment_outputs(task_id: str, reference: Path, output: Path) -> tupl
 
 def finalize_task(row: dict) -> None:
     task_id = row["task_id"]
-    vocals_dir = storage.object_prefix(f"{task_id}/speaker/vocals")
     tts_dir = storage.object_prefix(f"{task_id}/speaker/tts")
     translation_ref = f"db://speaker_segment/{task_id}"
     fields = {
         "translation_json_path": translation_ref,
-        "vocals_segments_dir": vocals_dir,
         "tts_segments_dir": tts_dir,
     }
     db.mark_success("speaker", task_id, fields)
