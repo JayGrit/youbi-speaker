@@ -327,7 +327,7 @@ def claim_speaker_segment(segment_id: int) -> dict[str, Any] | None:
     video_info.ensure_schema()
     with connect() as conn:
         cur = conn.cursor()
-        _ensure_operator_columns(cur, ("task", "speaker", "speaker_segment"))
+        _ensure_operator_columns(cur, ("speaker", "speaker_segment"))
         cur.execute(
             """
             UPDATE speaker_segment seg
@@ -379,11 +379,10 @@ def claim_speaker_segment(segment_id: int) -> dict[str, Any] | None:
                 UPDATE task
                 SET status = 'running',
                     current_stage = 'speaker',
-                    started_at = COALESCE(started_at, NOW()),
-                    `operator` = %s
+                    started_at = COALESCE(started_at, NOW())
                 WHERE id = %s
                 """,
-                (operator, row["task_id"]),
+                (row["task_id"],),
             )
         conn.commit()
         return video_info.merge_into(row)
@@ -690,7 +689,7 @@ def mark_running(stage_name: str, task_id: str) -> bool:
     operator = _operator_value()
     with connect() as conn:
         cur = conn.cursor()
-        _ensure_operator_columns(cur, ("task", stage.table))
+        _ensure_operator_columns(cur, (stage.table,))
         cur.execute(
             f"""
             UPDATE {stage.table}
@@ -709,11 +708,10 @@ def mark_running(stage_name: str, task_id: str) -> bool:
                 UPDATE task
                 SET status = 'running',
                     current_stage = %s,
-                    started_at = COALESCE(started_at, NOW()),
-                    `operator` = %s
+                    started_at = COALESCE(started_at, NOW())
                 WHERE id = %s
                 """,
-                (stage_name, operator, task_id),
+                (stage_name, task_id),
             )
         conn.commit()
         return stage_updated
