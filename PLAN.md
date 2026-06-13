@@ -7,7 +7,7 @@ speech clips. It owns VoxCPM model loading and per-segment TTS generation.
 
 ## Input Table
 
-`yd_speaker`
+`speaker`
 
 Required fields:
 
@@ -16,20 +16,20 @@ Required fields:
 - `translation_json_path`
 - `status IN ('ready', 'running')`
 
-`yd_speaker` is the stage lifecycle row. Actual speak work is claimed from
-`yd_speaker_segment`, one row per translated sentence.
+`speaker` is the stage lifecycle row. Actual speak work is claimed from
+`speaker_segment`, one row per translated sentence.
 
 ## Outputs
 
 - `vocals_segments_dir`
 - `tts_segments_dir`
 
-It copies `translation_json_path` and `tts_segments_dir` into `yd_combiner`.
+It copies `translation_json_path` and `tts_segments_dir` into `combiner`.
 
 ## Polling
 
-Poll one `yd_speaker_segment.status = 'ready'` row every
-`POLL_INTERVAL_SECONDS`, joined with `yd_speaker.status IN ('ready', 'running')`.
+Poll one `speaker_segment.status = 'ready'` row every
+`POLL_INTERVAL_SECONDS`, joined with `speaker.status IN ('ready', 'running')`.
 Multiple speaker instances can claim different segments from the same video.
 Tasks whose translator stage is already `success` are prioritized before tasks
 that are still receiving translated segments.
@@ -37,7 +37,7 @@ that are still receiving translated segments.
 ## Processing
 
 1. Claim one segment by atomically changing it from `ready` to `running`.
-2. Move `yd_speaker` from `ready` to `running` if this is the first segment.
+2. Move `speaker` from `ready` to `running` if this is the first segment.
 3. Split the source vocal reference for that segment.
 4. Generate one WAV for that segment.
 5. Mark the segment `success`.

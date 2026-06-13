@@ -94,7 +94,7 @@ def _download_vocals(row: dict, session: Path) -> Path:
 
 
 def handle(row: dict) -> dict[str, str]:
-    raise RuntimeError("speaker uses yd_speaker_segment rows; batch translation JSON input is no longer supported")
+    raise RuntimeError("speaker uses speaker_segment rows; batch translation JSON input is no longer supported")
 
 
 def _prepare_references(task_id: str, vocals: Path, session: Path) -> tuple[Path, dict[int, Path]]:
@@ -172,7 +172,7 @@ def finalize_task(row: dict) -> None:
     task_id = row["task_id"]
     vocals_dir = storage.object_prefix(f"{task_id}/speaker/vocals")
     tts_dir = storage.object_prefix(f"{task_id}/speaker/tts")
-    translation_ref = f"db://yd_speaker_segment/{task_id}"
+    translation_ref = f"db://speaker_segment/{task_id}"
     fields = {
         "translation_json_path": translation_ref,
         "vocals_segments_dir": vocals_dir,
