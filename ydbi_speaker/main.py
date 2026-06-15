@@ -13,6 +13,7 @@ from ydbi_speaker.adapters.voxcpm import fallback_reference, generate_tts_segmen
 from ydbi_speaker.config import POLL_INTERVAL_SECONDS
 
 log = logging.getLogger(__name__)
+_CLEANUP_INTERVAL_SECONDS = 10 * 60
 
 
 def _is_empty_target_text_error(exc: Exception) -> bool:
@@ -181,13 +182,38 @@ def finalize_task(row: dict) -> None:
     log.info("speaker task %s finalized", task_id)
 
 
+def cleanup_successful_task_work_dirs() -> int:
+    work_root = storage.WORK_DIR
+    if not work_root.exists():
+        return 0
+
+    task_ids = [path.name for path in work_root.iterdir() if path.is_dir()]
+    successful_task_ids = db.list_successful_speaker_task_ids(task_ids)
+    cleaned = 0
+    for task_id in successful_task_ids:
+        path = storage.task_work_path(task_id)
+        if not path.exists():
+            continue
+        shutil.rmtree(path, ignore_errors=True)
+        cleaned += 1
+        log.info("speaker task=%s removed successful task work dir=%s", task_id, path)
+    return cleaned
+
+
 def run_segment_worker() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     db.ensure_speaker_segment_schema()
     log.info("speaker service started; polling segments every %ss", POLL_INTERVAL_SECONDS)
+    next_cleanup_at = 0.0
     while True:
         try:
             db.record_service_poll("speaker")
+            now = time.monotonic()
+            if now >= next_cleanup_at:
+                cleaned = cleanup_successful_task_work_dirs()
+                if cleaned:
+                    log.info("speaker cleaned %d successful task work dir(s)", cleaned)
+                next_cleanup_at = now + _CLEANUP_INTERVAL_SECONDS
             recycled, _exhausted_task_ids = db.recycle_stale_speaker_segments()
             if recycled:
                 log.warning("speaker recycled %d stale running/failed segment(s)", recycled)

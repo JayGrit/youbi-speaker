@@ -680,6 +680,24 @@ def find_terminal_failed_speaker_task(task_id: str | None = None) -> dict[str, A
         return cur.fetchone()
 
 
+def list_successful_speaker_task_ids(task_ids: list[str]) -> set[str]:
+    if not task_ids:
+        return set()
+    placeholders = ", ".join(["%s"] * len(task_ids))
+    with connect() as conn:
+        cur = _dict_cursor(conn)
+        cur.execute(
+            f"""
+            SELECT task_id
+            FROM speaker
+            WHERE status = %s
+              AND task_id IN ({placeholders})
+            """,
+            (SUCCESS, *task_ids),
+        )
+        return {str(row["task_id"]) for row in cur.fetchall()}
+
+
 def mark_speaker_failed_from_segment(task_id: str, message: str) -> None:
     mark_failed("speaker", task_id, message)
 
