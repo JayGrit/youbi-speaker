@@ -11,6 +11,7 @@ from ydbi_speaker.adapters.audio import split_audio_segment, split_audio_segment
 from ydbi_speaker.adapters.reference import select_global_reference
 from ydbi_speaker.adapters.voxcpm import fallback_reference, generate_tts_segment, sanitize_target_text
 from ydbi_speaker.config import POLL_INTERVAL_SECONDS
+from ydbi_speaker.service import SERVICE_NAME
 
 log = logging.getLogger(__name__)
 _CLEANUP_INTERVAL_SECONDS = 10 * 60
@@ -177,7 +178,7 @@ def finalize_task(row: dict) -> None:
         "translation_json_path": translation_ref,
         "tts_segments_dir": tts_dir,
     }
-    db.mark_success("speaker", task_id, fields)
+    db.mark_success(SERVICE_NAME, task_id, fields)
     shutil.rmtree(storage.task_work_path(task_id), ignore_errors=True)
     log.info("speaker task %s finalized", task_id)
 
@@ -207,7 +208,7 @@ def run_segment_worker() -> None:
     next_cleanup_at = 0.0
     while True:
         try:
-            db.record_service_poll("speaker")
+            db.record_service_poll(SERVICE_NAME)
             now = time.monotonic()
             if now >= next_cleanup_at:
                 cleaned = cleanup_successful_task_work_dirs()

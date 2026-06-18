@@ -8,7 +8,7 @@ import mysql.connector
 
 from . import video_info
 from .config import MYSQL_CONFIG, SEGMENT_RUNNING_TIMEOUT_SECONDS
-from .stages import FAILED, READY, RUNNING, SUCCESS, stage_for
+from .service import FAILED, READY, RUNNING, SERVICE_NAME, SERVICE_TABLE, SUCCESS
 
 HEARTBEAT_TABLE = "service_heartbeat"
 SUBMISSION_TABLE = "downloader_submission"
@@ -31,6 +31,12 @@ def _row_value(row: Any, index: int = 0) -> Any:
     if isinstance(row, Mapping):
         return list(row.values())[index]
     return row[index]
+
+
+def _service_table_for(stage_name: str) -> str:
+    if stage_name != SERVICE_NAME:
+        raise ValueError(f"{SERVICE_NAME} service cannot handle stage: {stage_name}")
+    return SERVICE_TABLE
 
 
 def _staged_table_exists_cur(cur, table: str) -> bool:
@@ -238,13 +244,13 @@ def get_task(task_id: str) -> dict[str, Any] | None:
 
 
 def find_ready(stage_name: str) -> dict[str, Any] | None:
-    stage = stage_for(stage_name)
+    table = _service_table_for(stage_name)
     with connect() as conn:
         cur = _dict_cursor(conn)
         cur.execute(
             f"""
             SELECT s.*
-            FROM {stage.table} s
+            FROM {table} s
             JOIN task t ON t.id = s.task_id
             WHERE s.status = %s
               AND t.status <> 'failed'
@@ -699,18 +705,18 @@ def list_successful_speaker_task_ids(task_ids: list[str]) -> set[str]:
 
 
 def mark_speaker_failed_from_segment(task_id: str, message: str) -> None:
-    mark_failed("speaker", task_id, message)
+    mark_failed(SERVICE_NAME, task_id, message)
 
 
 def mark_running(stage_name: str, task_id: str) -> bool:
-    stage = stage_for(stage_name)
+    table = _service_table_for(stage_name)
     operator = _operator_value()
     with connect() as conn:
         cur = conn.cursor()
-        _ensure_operator_columns(cur, (stage.table,))
+        _ensure_operator_columns(cur, (table,))
         cur.execute(
             f"""
-            UPDATE {stage.table}
+            UPDATE {table}
             SET status = %s,
                 started_at = COALESCE(started_at, NOW()),
                 error_message = NULL,
@@ -736,12 +742,12 @@ def mark_running(stage_name: str, task_id: str) -> bool:
 
 
 def _update_stage_fields(stage_name: str, task_id: str, fields: Mapping[str, Any]) -> None:
-    stage = stage_for(stage_name)
+    table = _service_table_for(stage_name)
     assignments = ", ".join(f"{key} = %s" for key in fields)
     values = list(fields.values()) + [task_id]
     with connect() as conn:
         cur = conn.cursor()
-        cur.execute(f"UPDATE {stage.table} SET {assignments} WHERE task_id = %s", values)
+        cur.execute(f"UPDATE {table} SET {assignments} WHERE task_id = %s", values)
         conn.commit()
 
 
@@ -760,7 +766,7 @@ def set_combiner_speaker_inputs(
 
 
 def mark_success(stage_name: str, task_id: str, outputs: Mapping[str, Any] | None = None) -> None:
-    stage = stage_for(stage_name)
+    table = _service_table_for(stage_name)
     fields = dict(outputs or {})
     stage_fields = {key: value for key, value in fields.items() if key not in video_info.COLUMNS}
     assignments = ["status = %s", "completed_at = NOW()", "error_message = NULL"]
@@ -779,14 +785,14 @@ def mark_success(stage_name: str, task_id: str, outputs: Mapping[str, Any] | Non
             return
         video_info.upsert(task_id, fields, cur)
         cur.execute(
-            f"UPDATE {stage.table} SET {', '.join(assignments)} WHERE task_id = %s",
+            f"UPDATE {table} SET {', '.join(assignments)} WHERE task_id = %s",
             values,
         )
         conn.commit()
 
 
 def mark_failed(stage_name: str, task_id: str, message: str) -> None:
-    stage = stage_for(stage_name)
+    table = _service_table_for(stage_name)
     with connect() as conn:
         cur = conn.cursor()
         cur.execute("SELECT status FROM task WHERE id = %s FOR UPDATE", (task_id,))
@@ -794,7 +800,7 @@ def mark_failed(stage_name: str, task_id: str, message: str) -> None:
         old_task_status = _row_value(task_row) if task_row else None
         cur.execute(
             f"""
-            UPDATE {stage.table}
+            UPDATE {table}
             SET status = %s, error_message = %s, completed_at = NOW()
             WHERE task_id = %s
             """,
