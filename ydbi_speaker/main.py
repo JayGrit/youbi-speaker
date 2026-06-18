@@ -33,14 +33,6 @@ def _translation_object_candidates(task_id: str) -> tuple[str, ...]:
     return ()
 
 
-def _is_false(value) -> bool:
-    if value is None:
-        return False
-    if isinstance(value, str):
-        return value.strip().lower() in {"0", "false", "no", "off"}
-    return value is False or value == 0
-
-
 def _download_destination(session: Path, source_ref: str) -> Path:
     suffix = Path(source_ref.split("?", 1)[0]).suffix or ".wav"
     return session / "input" / f"vocals{suffix}"
@@ -57,14 +49,13 @@ def _input_refs(row: dict) -> tuple[tuple[str, str], ...]:
         if value:
             refs.append((value, label))
 
-    if _is_false(row.get("need_separation")):
-        for key, label in (
-            ("audio_source_url", "source audio url"),
-            ("audio_source_path", "source audio path"),
-        ):
-            value = str(row.get(key) or "").strip()
-            if value:
-                refs.append((value, label))
+    for key, label in (
+        ("audio_source_url", "source audio url"),
+        ("audio_source_path", "source audio path"),
+    ):
+        value = str(row.get(key) or "").strip()
+        if value:
+            refs.append((value, label))
 
     return tuple(refs)
 
