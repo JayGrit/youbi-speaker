@@ -4,6 +4,7 @@ import contextlib
 import os
 import re
 import unicodedata
+import warnings
 from pathlib import Path
 
 import soundfile as sf
@@ -42,7 +43,7 @@ def _model_path() -> Path:
         if _is_complete_model_dir(path):
             return path
         if path.exists():
-            print(f"VoxCPM model directory is incomplete; refreshing {VOXCPM_MODEL} at {path}", flush=True)
+            print(f"VoxCPM 模型目录不完整，正在重新下载：{path}", flush=True)
 
         path.parent.mkdir(parents=True, exist_ok=True)
         try:
@@ -53,7 +54,7 @@ def _model_path() -> Path:
                 f"Install project dependencies, then rerun start.sh. Expected model path: {path}"
             ) from exc
 
-        print(f"VoxCPM model not found; downloading {VOXCPM_MODEL} to {path}", flush=True)
+        print(f"未找到 VoxCPM 模型，正在下载到：{path}", flush=True)
         downloaded = Path(
             snapshot_download(
                 VOXCPM_MODEL,
@@ -73,13 +74,23 @@ def _model_path() -> Path:
 def _load_model():
     global _MODEL
     if _MODEL is None:
-        from voxcpm import VoxCPM
+        model_path = _model_path()
+        print(f"正在加载 VoxCPM 语音模型：{model_path}", flush=True)
+        with (
+            open(os.devnull, "w") as devnull,
+            contextlib.redirect_stdout(devnull),
+            contextlib.redirect_stderr(devnull),
+            warnings.catch_warnings(),
+        ):
+            warnings.simplefilter("ignore", FutureWarning)
+            from voxcpm import VoxCPM
 
-        _MODEL = VoxCPM.from_pretrained(
-            str(_model_path()),
-            load_denoiser=VOXCPM_LOAD_DENOISER,
-            optimize=VOXCPM_OPTIMIZE,
-        )
+            _MODEL = VoxCPM.from_pretrained(
+                str(model_path),
+                load_denoiser=VOXCPM_LOAD_DENOISER,
+                optimize=VOXCPM_OPTIMIZE,
+            )
+        print("VoxCPM 语音模型加载完成", flush=True)
     return _MODEL
 
 

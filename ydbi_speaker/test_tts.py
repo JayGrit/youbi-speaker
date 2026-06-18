@@ -47,8 +47,9 @@ def main() -> None:
     parser.add_argument("-o", "--output", dest="output_path", help="Output WAV path.")
     args = parser.parse_args()
 
+    print("正在生成语音，请稍候……", flush=True)
     output = synthesize_from_reference(args.reference_audio_path, args.text_file_path, args.output_path)
-    print(output)
+    print(f"语音生成完成：{output}", flush=True)
 
 
 if __name__ == "__main__":
