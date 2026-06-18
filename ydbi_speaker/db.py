@@ -150,6 +150,8 @@ SEGMENT_READY = "ready"
 SEGMENT_RUNNING = "running"
 SEGMENT_SUCCESS = "success"
 SEGMENT_FAILED = "failed"
+TRANSLATOR_SEGMENT_TABLE = "translator_segment"
+_segment_schema_ready = False
 SPEAKER_SEGMENT_EXTRA_COLUMNS = {
     "reference_wav_url": "TEXT",
     "tts_wav_url": "TEXT",
@@ -230,7 +232,83 @@ def record_service_poll(stage_name: str) -> None:
 
 
 def ensure_speaker_segment_schema() -> None:
-    return
+    global _segment_schema_ready
+    if _segment_schema_ready:
+        return
+    with connect() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {TRANSLATOR_SEGMENT_TABLE} (
+              task_id VARCHAR(64) NOT NULL,
+              item_index INT NOT NULL,
+              src_text MEDIUMTEXT NULL,
+              dst_text MEDIUMTEXT NOT NULL,
+              src_lang VARCHAR(16) NULL,
+              dst_lang VARCHAR(16) NULL,
+              start_time INT NOT NULL,
+              end_time INT NOT NULL,
+              speaker VARCHAR(64) NULL,
+              created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+              PRIMARY KEY (task_id, item_index)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+            """
+        )
+        conn.commit()
+    _segment_schema_ready = True
+
+
+def initialize_ready_speaker_task() -> tuple[str, int] | None:
+    ensure_speaker_segment_schema()
+    with connect() as conn:
+        conn.start_transaction()
+        cur = _dict_cursor(conn)
+        cur.execute(
+            """
+            SELECT sp.task_id
+            FROM speaker sp
+            JOIN translator tr ON tr.task_id = sp.task_id
+            JOIN task t ON t.id = sp.task_id
+            WHERE sp.status = %s
+              AND tr.status = %s
+              AND t.status <> 'failed'
+              AND NOT EXISTS (
+                SELECT 1
+                FROM speaker_segment seg
+                WHERE seg.task_id = sp.task_id
+              )
+            ORDER BY sp.task_id ASC
+            LIMIT 1
+            FOR UPDATE
+            """,
+            (READY, SUCCESS),
+        )
+        row = cur.fetchone()
+        if not row:
+            conn.commit()
+            return None
+        task_id = str(row["task_id"])
+        cur = conn.cursor()
+        cur.execute(
+            f"""
+            INSERT INTO speaker_segment
+              (
+                task_id, item_index, status, src_text, dst_text, src_lang, dst_lang,
+                start_time, end_time, speaker
+              )
+            SELECT
+              task_id, item_index, %s, src_text, dst_text, src_lang, dst_lang,
+              start_time, end_time, speaker
+            FROM {TRANSLATOR_SEGMENT_TABLE}
+            WHERE task_id = %s
+            ORDER BY item_index ASC
+            """,
+            (SEGMENT_READY, task_id),
+        )
+        inserted = int(cur.rowcount)
+        conn.commit()
+        return task_id, inserted
 
 def get_task(task_id: str) -> dict[str, Any] | None:
     with connect() as conn:

@@ -33,8 +33,45 @@ class FakeConnection:
     def cursor(self, dictionary=False):
         return self.cursor_value
 
+    def start_transaction(self) -> None:
+        return None
+
+    def commit(self) -> None:
+        return None
+
+
+class InitCursor(FakeCursor):
+    def __init__(self) -> None:
+        super().__init__()
+        self.selected_task = False
+
+    def execute(self, sql, params=()) -> None:
+        super().execute(sql, params)
+        if "SELECT sp.task_id" in sql:
+            self.selected_task = True
+        if "INSERT INTO speaker_segment" in sql:
+            self.rowcount = 2
+
+    def fetchone(self):
+        if self.selected_task:
+            self.selected_task = False
+            return {"task_id": "task-1"}
+        return None
+
 
 class StageSerializationTest(unittest.TestCase):
+    def test_speaker_creates_its_segments_from_translator_output(self) -> None:
+        cursor = InitCursor()
+        with (
+            patch.object(db, "connect", return_value=FakeConnection(cursor)),
+            patch.object(db, "ensure_speaker_segment_schema"),
+        ):
+            initialized = db.initialize_ready_speaker_task()
+
+        self.assertEqual(("task-1", 2), initialized)
+        self.assertIn("FROM translator_segment", cursor.sql)
+        self.assertEqual((db.SEGMENT_READY, "task-1"), cursor.params)
+
     def test_ready_segment_query_requires_translator_success(self) -> None:
         cursor = FakeCursor()
         with (

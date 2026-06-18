@@ -209,6 +209,17 @@ def run_segment_worker() -> None:
             recycled, _exhausted_task_ids = db.recycle_stale_speaker_segments()
             if recycled:
                 log.warning("speaker recycled %d stale running/failed segment(s)", recycled)
+            initialized = db.initialize_ready_speaker_task()
+            if initialized:
+                task_id, segment_count = initialized
+                if segment_count == 0:
+                    db.mark_failed(
+                        SERVICE_NAME,
+                        task_id,
+                        f"translator_segment is empty for task: {task_id}",
+                    )
+                    continue
+                log.info("speaker task=%s initialized %d segment(s)", task_id, segment_count)
             finalizable = db.find_finalizable_speaker_task()
             if finalizable:
                 finalize_task(finalizable)
