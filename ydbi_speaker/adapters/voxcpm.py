@@ -3,12 +3,14 @@ from __future__ import annotations
 import contextlib
 import os
 import re
+import sys
 import unicodedata
 import warnings
 from pathlib import Path
 
 import soundfile as sf
 from pydub import AudioSegment
+from tqdm import tqdm
 
 from .ffmpeg import configure_pydub_ffmpeg
 from ..config import (
@@ -25,6 +27,23 @@ configure_pydub_ffmpeg()
 
 _MODEL = None
 _WHITESPACE_RE = re.compile(r"\s+")
+
+
+class _CompletingProgress(tqdm):
+    def close(self) -> None:
+        if self.total is not None and self.n < self.total:
+            self.n = self.total
+        super().close()
+
+
+def _chinese_progress(iterable, *args, **kwargs):
+    kwargs.update(
+        desc="正在生成语音",
+        unit="步",
+        dynamic_ncols=True,
+        file=sys.stdout,
+    )
+    return _CompletingProgress(iterable, *args, **kwargs)
 
 
 def _is_complete_model_dir(path: Path) -> bool:
@@ -90,6 +109,9 @@ def _load_model():
                 load_denoiser=VOXCPM_LOAD_DENOISER,
                 optimize=VOXCPM_OPTIMIZE,
             )
+            import voxcpm.model.voxcpm2 as voxcpm2
+
+            voxcpm2.tqdm = _chinese_progress
         print("VoxCPM 语音模型加载完成", flush=True)
     return _MODEL
 
