@@ -16,6 +16,7 @@ dependencies = [
 
 [project.scripts]
 ydbi-speaker = "ydbi_speaker.main:main"
+ydbi-speaker-test-tts = "ydbi_speaker.test_tts:main"
 
 [build-system]
 requires = ["setuptools>=69"]
