@@ -266,12 +266,17 @@ def initialize_ready_speaker_task() -> tuple[str, int] | None:
         cur = _dict_cursor(conn)
         cur.execute(
             """
-            SELECT sp.task_id
+            SELECT sp.task_id, vi.task_type
             FROM speaker sp
-            JOIN translator tr ON tr.task_id = sp.task_id
             JOIN task t ON t.id = sp.task_id
+            JOIN video_info vi ON vi.task_id = sp.task_id
+            LEFT JOIN translator tr ON tr.task_id = sp.task_id
+            LEFT JOIN product_narration pn ON pn.task_id = sp.task_id
             WHERE sp.status = %s
-              AND tr.status = %s
+              AND (
+                (vi.task_type = 'narration' AND NULLIF(TRIM(pn.text), '') IS NOT NULL)
+                OR (vi.task_type <> 'narration' AND tr.status = %s)
+              )
               AND t.status <> 'failed'
               AND NOT EXISTS (
                 SELECT 1
@@ -290,6 +295,23 @@ def initialize_ready_speaker_task() -> tuple[str, int] | None:
             return None
         task_id = str(row["task_id"])
         cur = conn.cursor()
+        if row.get("task_type") == "narration":
+            cur.execute(
+                """
+                INSERT INTO speaker_segment
+                  (
+                    task_id, item_index, status, src_text, dst_text, src_lang, dst_lang,
+                    start_time, end_time, speaker
+                  )
+                SELECT task_id, 0, %s, text, text, 'zh', 'zh', 0, 0, NULL
+                FROM product_narration
+                WHERE task_id = %s AND NULLIF(TRIM(text), '') IS NOT NULL
+                """,
+                (SEGMENT_READY, task_id),
+            )
+            inserted = int(cur.rowcount)
+            conn.commit()
+            return task_id, inserted
         cur.execute(
             f"""
             INSERT INTO speaker_segment
@@ -349,11 +371,12 @@ def find_ready_speaker_segment() -> dict[str, Any] | None:
         cur.execute(
             """
             SELECT seg.*,
+                   vi.task_type AS task_type,
                    vi.audio_vocals_path AS speaker_audio_vocals_path,
                    vi.translation_json_path AS translation_json_path
             FROM speaker_segment seg
             JOIN speaker sp ON sp.task_id = seg.task_id
-            JOIN translator tr ON tr.task_id = seg.task_id
+            LEFT JOIN translator tr ON tr.task_id = seg.task_id
             JOIN task t ON t.id = seg.task_id
             JOIN video_info vi ON vi.task_id = seg.task_id
             JOIN (
@@ -387,7 +410,7 @@ def find_ready_speaker_segment() -> dict[str, Any] | None:
             ) account_priority ON account_priority.task_id = seg.task_id
             WHERE sp.status IN (%s, %s)
               AND seg.status = %s
-              AND tr.status = %s
+              AND (vi.task_type = 'narration' OR tr.status = %s)
               AND t.status <> 'failed'
             ORDER BY
               CASE WHEN tr.status = %s THEN 0 ELSE 1 END,
@@ -417,7 +440,8 @@ def claim_speaker_segment(segment_id: int) -> dict[str, Any] | None:
             """
             UPDATE speaker_segment seg
             JOIN task t ON t.id = seg.task_id
-            JOIN translator tr ON tr.task_id = seg.task_id
+            JOIN video_info vi ON vi.task_id = seg.task_id
+            LEFT JOIN translator tr ON tr.task_id = seg.task_id
             SET seg.status = %s,
                 seg.attempt_count = seg.attempt_count + 1,
                 seg.started_at = COALESCE(seg.started_at, NOW()),
@@ -425,7 +449,7 @@ def claim_speaker_segment(segment_id: int) -> dict[str, Any] | None:
                 seg.`operator` = %s
             WHERE seg.id = %s
               AND seg.status = %s
-              AND tr.status = %s
+              AND (vi.task_type = 'narration' OR tr.status = %s)
               AND t.status <> 'failed'
             """,
             (SEGMENT_RUNNING, operator, segment_id, SEGMENT_READY, SUCCESS),
@@ -438,6 +462,7 @@ def claim_speaker_segment(segment_id: int) -> dict[str, Any] | None:
         cur.execute(
             """
             SELECT seg.*,
+                   vi.task_type AS task_type,
                    vi.audio_vocals_path AS speaker_audio_vocals_path,
                    vi.translation_json_path AS translation_json_path
             FROM speaker_segment seg
@@ -697,9 +722,10 @@ def find_finalizable_speaker_task(task_id: str | None = None) -> dict[str, Any] 
             SELECT sp.*
             FROM speaker sp
             JOIN task t ON t.id = sp.task_id
-            JOIN translator tr ON tr.task_id = sp.task_id
+            JOIN video_info vi ON vi.task_id = sp.task_id
+            LEFT JOIN translator tr ON tr.task_id = sp.task_id
             WHERE sp.status IN (%s, %s)
-              AND tr.status = %s
+              AND (vi.task_type = 'narration' OR tr.status = %s)
               AND t.status <> 'failed'
               {task_filter}
               AND EXISTS (

@@ -10,7 +10,7 @@ from ydbi_speaker import storage
 from ydbi_speaker.adapters.audio import split_audio_segment, split_audio_segments
 from ydbi_speaker.adapters.reference import select_global_reference
 from ydbi_speaker.adapters.voxcpm import fallback_reference, generate_tts_segment, sanitize_target_text
-from ydbi_speaker.config import POLL_INTERVAL_SECONDS
+from ydbi_speaker.config import NARRATION_REFERENCE_AUDIO_URL, POLL_INTERVAL_SECONDS
 from ydbi_speaker.service import SERVICE_NAME
 
 log = logging.getLogger(__name__)
@@ -86,6 +86,13 @@ def _download_vocals(row: dict, session: Path) -> Path:
     raise FileNotFoundError(f"audio_vocals_url is missing or unavailable for task: {task_id}{suffix}")
 
 
+def _download_narration_reference(session: Path) -> Path:
+    destination = session / "input" / "narration-reference.wav"
+    if destination.exists() and destination.stat().st_size > 0:
+        return destination
+    return storage.download(NARRATION_REFERENCE_AUDIO_URL, destination)
+
+
 def handle(row: dict) -> dict[str, str]:
     raise RuntimeError("speaker uses speaker_segment rows; batch translation JSON input is no longer supported")
 
@@ -116,6 +123,12 @@ def handle_segment(row: dict) -> tuple[Path, Path]:
     task_id = row["task_id"]
     session = storage.task_work_dir(task_id)
     item_index = int(row["item_index"])
+    if row.get("task_type") == "narration":
+        reference = _download_narration_reference(session)
+        target_text = sanitize_target_text(row.get("dst_text"))
+        output = generate_tts_segment(target_text, item_index, reference, reference, session)
+        return reference, output
+
     vocals = _download_vocals(row, session)
     vocals_dir = session / "segments" / "vocals"
     global_reference, segment_paths = _prepare_references(task_id, vocals, session)
@@ -216,7 +229,7 @@ def run_segment_worker() -> None:
                     db.mark_failed(
                         SERVICE_NAME,
                         task_id,
-                        f"translator_segment is empty for task: {task_id}",
+                        f"speaker input text is empty for task: {task_id}",
                     )
                     continue
                 log.info("speaker task=%s initialized %d segment(s)", task_id, segment_count)

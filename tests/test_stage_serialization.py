@@ -55,7 +55,20 @@ class InitCursor(FakeCursor):
     def fetchone(self):
         if self.selected_task:
             self.selected_task = False
-            return {"task_id": "task-1"}
+            return {"task_id": "task-1", "task_type": "dubbing"}
+        return None
+
+
+class NarrationInitCursor(InitCursor):
+    def execute(self, sql, params=()) -> None:
+        super().execute(sql, params)
+        if "FROM product_narration" in sql:
+            self.rowcount = 1
+
+    def fetchone(self):
+        if self.selected_task:
+            self.selected_task = False
+            return {"task_id": "narration-7", "task_type": "narration"}
         return None
 
 
@@ -83,8 +96,33 @@ class StageSerializationTest(unittest.TestCase):
         ):
             self.assertIsNone(db.find_ready_speaker_segment())
 
-        self.assertIn("AND tr.status = %s", cursor.sql)
+        self.assertIn("vi.task_type = 'narration' OR tr.status = %s", cursor.sql)
         self.assertEqual(db.SUCCESS, cursor.params[4])
+
+    def test_narration_creates_one_segment_from_longtext(self) -> None:
+        cursor = NarrationInitCursor()
+        with (
+            patch.object(db, "connect", return_value=FakeConnection(cursor)),
+            patch.object(db, "ensure_speaker_segment_schema"),
+        ):
+            initialized = db.initialize_ready_speaker_task()
+
+        self.assertEqual(("narration-7", 1), initialized)
+        self.assertIn("FROM product_narration", cursor.sql)
+        self.assertIn("text, text", cursor.sql)
+        self.assertEqual((db.SEGMENT_READY, "narration-7"), cursor.params)
+
+    def test_narration_can_finalize_without_translator(self) -> None:
+        cursor = FakeCursor()
+        with (
+            patch.object(db, "connect", return_value=FakeConnection(cursor)),
+            patch.object(db, "ensure_speaker_segment_schema"),
+            patch.object(db.video_info, "merge_into", side_effect=lambda row: row),
+        ):
+            self.assertIsNone(db.find_finalizable_speaker_task("narration-7"))
+
+        self.assertIn("LEFT JOIN translator", cursor.sql)
+        self.assertIn("vi.task_type = 'narration' OR tr.status = %s", cursor.sql)
 
 
 if __name__ == "__main__":
