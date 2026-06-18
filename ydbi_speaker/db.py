@@ -309,6 +309,7 @@ def find_ready_speaker_segment() -> dict[str, Any] | None:
             ) account_priority ON account_priority.task_id = seg.task_id
             WHERE sp.status IN (%s, %s)
               AND seg.status = %s
+              AND tr.status = %s
               AND t.status <> 'failed'
             ORDER BY
               CASE WHEN tr.status = %s THEN 0 ELSE 1 END,
@@ -323,7 +324,7 @@ def find_ready_speaker_segment() -> dict[str, Any] | None:
               seg.item_index ASC
             LIMIT 1
             """,
-            (SEGMENT_SUCCESS, READY, RUNNING, SEGMENT_READY, SUCCESS, RUNNING, RUNNING),
+            (SEGMENT_SUCCESS, READY, RUNNING, SEGMENT_READY, SUCCESS, SUCCESS, RUNNING, RUNNING),
         )
         return video_info.merge_into(cur.fetchone())
 
@@ -338,6 +339,7 @@ def claim_speaker_segment(segment_id: int) -> dict[str, Any] | None:
             """
             UPDATE speaker_segment seg
             JOIN task t ON t.id = seg.task_id
+            JOIN translator tr ON tr.task_id = seg.task_id
             SET seg.status = %s,
                 seg.attempt_count = seg.attempt_count + 1,
                 seg.started_at = COALESCE(seg.started_at, NOW()),
@@ -345,9 +347,10 @@ def claim_speaker_segment(segment_id: int) -> dict[str, Any] | None:
                 seg.`operator` = %s
             WHERE seg.id = %s
               AND seg.status = %s
+              AND tr.status = %s
               AND t.status <> 'failed'
             """,
-            (SEGMENT_RUNNING, operator, segment_id, SEGMENT_READY),
+            (SEGMENT_RUNNING, operator, segment_id, SEGMENT_READY, SUCCESS),
         )
         if cur.rowcount != 1:
             conn.commit()
