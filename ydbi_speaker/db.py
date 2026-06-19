@@ -266,7 +266,7 @@ def initialize_ready_speaker_task() -> tuple[str, int] | None:
         cur = _dict_cursor(conn)
         cur.execute(
             """
-            SELECT sp.task_id, vi.task_type
+            SELECT sp.task_id, vi.task_type, pn.text AS narration_text
             FROM speaker sp
             JOIN task t ON t.id = sp.task_id
             JOIN video_info vi ON vi.task_id = sp.task_id
@@ -296,18 +296,20 @@ def initialize_ready_speaker_task() -> tuple[str, int] | None:
         task_id = str(row["task_id"])
         cur = conn.cursor()
         if row.get("task_type") == "narration":
-            cur.execute(
+            lines = [line.strip() for line in str(row.get("narration_text") or "").splitlines() if line.strip()]
+            cur.executemany(
                 """
                 INSERT INTO speaker_segment
                   (
                     task_id, item_index, status, src_text, dst_text, src_lang, dst_lang,
                     start_time, end_time, speaker
                   )
-                SELECT task_id, 0, %s, text, text, 'zh', 'zh', 0, 0, NULL
-                FROM product_narration
-                WHERE task_id = %s AND NULLIF(TRIM(text), '') IS NOT NULL
+                VALUES (%s, %s, %s, %s, %s, 'zh', 'zh', 0, 0, NULL)
                 """,
-                (SEGMENT_READY, task_id),
+                [
+                    (task_id, item_index, SEGMENT_READY, line, line)
+                    for item_index, line in enumerate(lines)
+                ],
             )
             inserted = int(cur.rowcount)
             conn.commit()

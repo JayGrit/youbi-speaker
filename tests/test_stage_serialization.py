@@ -16,6 +16,11 @@ class FakeCursor:
         self.sql = sql
         self.params = params
 
+    def executemany(self, sql, params) -> None:
+        self.sql = sql
+        self.params = list(params)
+        self.rowcount = len(self.params)
+
     def fetchone(self):
         return None
 
@@ -60,15 +65,14 @@ class InitCursor(FakeCursor):
 
 
 class NarrationInitCursor(InitCursor):
-    def execute(self, sql, params=()) -> None:
-        super().execute(sql, params)
-        if "FROM product_narration" in sql:
-            self.rowcount = 1
-
     def fetchone(self):
         if self.selected_task:
             self.selected_task = False
-            return {"task_id": "narration-7", "task_type": "narration"}
+            return {
+                "task_id": "narration-7",
+                "task_type": "narration",
+                "narration_text": " 第一行。\n\n第二行。 \r\n第三行。",
+            }
         return None
 
 
@@ -99,7 +103,7 @@ class StageSerializationTest(unittest.TestCase):
         self.assertIn("vi.task_type = 'narration' OR tr.status = %s", cursor.sql)
         self.assertEqual(db.SUCCESS, cursor.params[4])
 
-    def test_narration_creates_one_segment_from_longtext(self) -> None:
+    def test_narration_creates_one_segment_per_nonempty_line(self) -> None:
         cursor = NarrationInitCursor()
         with (
             patch.object(db, "connect", return_value=FakeConnection(cursor)),
@@ -107,10 +111,16 @@ class StageSerializationTest(unittest.TestCase):
         ):
             initialized = db.initialize_ready_speaker_task()
 
-        self.assertEqual(("narration-7", 1), initialized)
-        self.assertIn("FROM product_narration", cursor.sql)
-        self.assertIn("text, text", cursor.sql)
-        self.assertEqual((db.SEGMENT_READY, "narration-7"), cursor.params)
+        self.assertEqual(("narration-7", 3), initialized)
+        self.assertIn("VALUES (%s, %s, %s, %s, %s", cursor.sql)
+        self.assertEqual(
+            [
+                ("narration-7", 0, db.SEGMENT_READY, "第一行。", "第一行。"),
+                ("narration-7", 1, db.SEGMENT_READY, "第二行。", "第二行。"),
+                ("narration-7", 2, db.SEGMENT_READY, "第三行。", "第三行。"),
+            ],
+            cursor.params,
+        )
 
     def test_narration_can_finalize_without_translator(self) -> None:
         cursor = FakeCursor()
