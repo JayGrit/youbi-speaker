@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import contextlib
+import math
+import operator
 import os
 import re
 import sys
@@ -27,23 +29,36 @@ configure_pydub_ffmpeg()
 
 _MODEL = None
 _WHITESPACE_RE = re.compile(r"\s+")
+_PROGRESS_TOTAL_DIVISOR = 5
 
 
-class _CompletingProgress(tqdm):
+class _CappedVisualProgress(tqdm):
+    def update(self, n: int | float = 1) -> bool | None:
+        if self.total is not None:
+            n = min(n, max(0, self.total - self.n))
+            if n <= 0:
+                return None
+        return super().update(n)
+
     def close(self) -> None:
-        if self.total is not None and self.n < self.total:
+        if self.total is not None:
             self.n = self.total
         super().close()
 
 
 def _chinese_progress(iterable, *args, **kwargs):
+    original_total = kwargs.get("total")
+    if original_total is None:
+        original_total = operator.length_hint(iterable, 0)
+    if original_total:
+        kwargs["total"] = math.ceil(original_total / _PROGRESS_TOTAL_DIVISOR)
     kwargs.update(
         desc="正在生成语音",
         unit="步",
         dynamic_ncols=True,
         file=sys.stdout,
     )
-    return _CompletingProgress(iterable, *args, **kwargs)
+    return _CappedVisualProgress(iterable, *args, **kwargs)
 
 
 def _is_complete_model_dir(path: Path) -> bool:
