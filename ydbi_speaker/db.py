@@ -7,7 +7,11 @@ from typing import Any
 import mysql.connector
 
 from . import video_info
-from .config import MYSQL_CONFIG, SEGMENT_RUNNING_TIMEOUT_SECONDS
+from .config import (
+    MYSQL_CONFIG,
+    NARRATION_SEGMENT_RUNNING_TIMEOUT_SECONDS,
+    SEGMENT_RUNNING_TIMEOUT_SECONDS,
+)
 from .service import FAILED, READY, RUNNING, SERVICE_NAME, SERVICE_TABLE, SUCCESS
 
 HEARTBEAT_TABLE = "service_heartbeat"
@@ -690,53 +694,78 @@ def mark_speaker_segment_failed(segment_id: int, message: str) -> bool:
 
 def recycle_stale_speaker_segments() -> tuple[int, list[str]]:
     timeout_seconds = SEGMENT_RUNNING_TIMEOUT_SECONDS
+    narration_timeout_seconds = NARRATION_SEGMENT_RUNNING_TIMEOUT_SECONDS
     message = f"speaker segment timed out after {timeout_seconds}s; retrying"
+    narration_message = f"speaker narration segment timed out after {narration_timeout_seconds}s; retrying"
     exhausted_message = f"speaker segment timed out after {timeout_seconds}s; max attempts exhausted"
+    narration_exhausted_message = (
+        f"speaker narration segment timed out after {narration_timeout_seconds}s; max attempts exhausted"
+    )
     failed_recycle_message = "speaker failed segment recycled; retrying"
     with connect() as conn:
         cur = _dict_cursor(conn)
         cur.execute(
             """
-            SELECT DISTINCT task_id
-            FROM speaker_segment
-            WHERE status = %s
-              AND attempt_count >= max_attempts
-              AND started_at IS NOT NULL
-              AND TIMESTAMPDIFF(SECOND, started_at, NOW()) > %s
+            SELECT DISTINCT seg.task_id
+            FROM speaker_segment seg
+            JOIN video_info vi ON vi.task_id = seg.task_id
+            WHERE seg.status = %s
+              AND seg.attempt_count >= seg.max_attempts
+              AND seg.started_at IS NOT NULL
+              AND TIMESTAMPDIFF(SECOND, seg.started_at, NOW()) >
+                  CASE WHEN vi.task_type = 'narration' THEN %s ELSE %s END
             """,
-            (SEGMENT_RUNNING, timeout_seconds),
+            (SEGMENT_RUNNING, narration_timeout_seconds, timeout_seconds),
         )
         exhausted_task_ids = [str(row["task_id"]) for row in cur.fetchall()]
 
         cur = conn.cursor()
         cur.execute(
             """
-            UPDATE speaker_segment
-            SET status = %s,
-                error_message = %s,
-                started_at = NULL,
-                completed_at = NULL,
-                `operator` = NULL
-            WHERE status = %s
-              AND attempt_count < max_attempts
-              AND started_at IS NOT NULL
-              AND TIMESTAMPDIFF(SECOND, started_at, NOW()) > %s
+            UPDATE speaker_segment seg
+            JOIN video_info vi ON vi.task_id = seg.task_id
+            SET seg.status = %s,
+                seg.error_message = CASE WHEN vi.task_type = 'narration' THEN %s ELSE %s END,
+                seg.started_at = NULL,
+                seg.completed_at = NULL,
+                seg.`operator` = NULL
+            WHERE seg.status = %s
+              AND seg.attempt_count < seg.max_attempts
+              AND seg.started_at IS NOT NULL
+              AND TIMESTAMPDIFF(SECOND, seg.started_at, NOW()) >
+                  CASE WHEN vi.task_type = 'narration' THEN %s ELSE %s END
             """,
-            (SEGMENT_READY, message, SEGMENT_RUNNING, timeout_seconds),
+            (
+                SEGMENT_READY,
+                narration_message,
+                message,
+                SEGMENT_RUNNING,
+                narration_timeout_seconds,
+                timeout_seconds,
+            ),
         )
         retried = cur.rowcount
         cur.execute(
             """
-            UPDATE speaker_segment
-            SET status = %s,
-                error_message = %s,
-                completed_at = NOW()
-            WHERE status = %s
-              AND attempt_count >= max_attempts
-              AND started_at IS NOT NULL
-              AND TIMESTAMPDIFF(SECOND, started_at, NOW()) > %s
+            UPDATE speaker_segment seg
+            JOIN video_info vi ON vi.task_id = seg.task_id
+            SET seg.status = %s,
+                seg.error_message = CASE WHEN vi.task_type = 'narration' THEN %s ELSE %s END,
+                seg.completed_at = NOW()
+            WHERE seg.status = %s
+              AND seg.attempt_count >= seg.max_attempts
+              AND seg.started_at IS NOT NULL
+              AND TIMESTAMPDIFF(SECOND, seg.started_at, NOW()) >
+                  CASE WHEN vi.task_type = 'narration' THEN %s ELSE %s END
             """,
-            (SEGMENT_FAILED, exhausted_message, SEGMENT_RUNNING, timeout_seconds),
+            (
+                SEGMENT_FAILED,
+                narration_exhausted_message,
+                exhausted_message,
+                SEGMENT_RUNNING,
+                narration_timeout_seconds,
+                timeout_seconds,
+            ),
         )
         failed = cur.rowcount
         cur = _dict_cursor(conn)

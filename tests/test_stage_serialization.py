@@ -45,6 +45,19 @@ class FakeConnection:
         return None
 
 
+class RecycleCursor(FakeCursor):
+    def __init__(self) -> None:
+        super().__init__()
+        self.executed = []
+
+    def execute(self, sql, params=()) -> None:
+        super().execute(sql, params)
+        self.executed.append((sql, params))
+
+    def fetchall(self):
+        return []
+
+
 class InitCursor(FakeCursor):
     def __init__(self) -> None:
         super().__init__()
@@ -156,6 +169,17 @@ class StageSerializationTest(unittest.TestCase):
             ),
             cursor.params,
         )
+
+    def test_recycle_uses_ten_minute_timeout_for_narration(self) -> None:
+        cursor = RecycleCursor()
+        with patch.object(db, "connect", return_value=FakeConnection(cursor)):
+            self.assertEqual((0, []), db.recycle_stale_speaker_segments())
+
+        for sql, params in cursor.executed[:3]:
+            self.assertIn("CASE WHEN vi.task_type = 'narration' THEN %s ELSE %s END", sql)
+            self.assertEqual((10 * 60, 3 * 60), params[-2:])
+        self.assertIn("timed out after 600s", cursor.executed[1][1][1])
+        self.assertIn("timed out after 180s", cursor.executed[1][1][2])
 
     def test_narration_groups_sentence_rows_by_segment_index(self) -> None:
         cursor = NarrationInitCursor()
