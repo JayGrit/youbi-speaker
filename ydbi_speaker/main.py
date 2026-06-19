@@ -8,6 +8,7 @@ from pathlib import Path
 from ydbi_speaker import db
 from ydbi_speaker import storage
 from ydbi_speaker.adapters.audio import split_audio_segment, split_audio_segments
+from ydbi_speaker.adapters.audio_adjust import stabilize_narration_audio
 from ydbi_speaker.adapters.reference import select_global_reference
 from ydbi_speaker.adapters.voxcpm import fallback_reference, generate_tts_segment, sanitize_target_text
 from ydbi_speaker.config import NARRATION_REFERENCE_AUDIO_URL, POLL_INTERVAL_SECONDS
@@ -134,7 +135,7 @@ def handle_segment(row: dict) -> tuple[Path, Path]:
             session,
             progress_label=f"{task_id}:{item_index}",
         )
-        return reference, output
+        return reference, stabilize_narration_audio(output, session)
 
     vocals = _download_vocals(row, session)
     vocals_dir = session / "segments" / "vocals"
