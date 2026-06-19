@@ -23,6 +23,8 @@ UPLOAD_SUBMISSION_TABLES = (
 )
 HEARTBEAT_DEVICE_COLUMNS = ("Macbook Air M4", "Macmini M2", "LPXB", "MY_HP", "LPXB_HP", "TXY")
 NARRATION_OPERATOR = "Macbook Air M4"
+PRODUCT_NARRATION_SENTENCE_TABLE = "product_narration_sentence"
+MAX_NARRATION_SEGMENT_CHARS = 500
 OPERATOR_COLUMN = "operator"
 OPERATOR_COLUMN_DEFINITION = "VARCHAR(128) NULL"
 _heartbeat_schema_ready = False
@@ -256,8 +258,68 @@ def ensure_speaker_segment_schema() -> None:
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
             """
         )
+        cur.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {PRODUCT_NARRATION_SENTENCE_TABLE} (
+              id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+              narration_id BIGINT UNSIGNED NOT NULL,
+              task_id VARCHAR(64) NOT NULL,
+              line_index INT UNSIGNED NOT NULL,
+              sentence_text TEXT NOT NULL,
+              segment_index INT UNSIGNED NOT NULL,
+              created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+              UNIQUE KEY uk_product_narration_sentence_line (task_id, line_index),
+              KEY idx_product_narration_sentence_segment (task_id, segment_index, line_index),
+              CONSTRAINT fk_product_narration_sentence_narration
+                FOREIGN KEY (narration_id) REFERENCES product_narration (id)
+                ON UPDATE CASCADE ON DELETE CASCADE,
+              CONSTRAINT fk_product_narration_sentence_task
+                FOREIGN KEY (task_id) REFERENCES task (id)
+                ON UPDATE CASCADE ON DELETE CASCADE
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+            """
+        )
         conn.commit()
     _segment_schema_ready = True
+
+
+def _build_narration_segments(sentence_rows: list[dict[str, Any]]) -> list[str]:
+    if not sentence_rows:
+        raise ValueError("narration sentence rows are required")
+    segments: list[str] = []
+    current_segment_index = 1
+    current_lines: list[str] = []
+    expected_line_index = 1
+    for row in sentence_rows:
+        line_index = int(row["line_index"])
+        segment_index = int(row["segment_index"])
+        sentence_text = str(row.get("sentence_text") or "").strip()
+        if line_index != expected_line_index:
+            raise ValueError(f"narration sentence line index is not contiguous at {line_index}")
+        if not sentence_text:
+            raise ValueError(f"narration sentence {line_index} is empty")
+        allowed_segment_indexes = (
+            {current_segment_index}
+            if not current_lines
+            else {current_segment_index, current_segment_index + 1}
+        )
+        if segment_index not in allowed_segment_indexes:
+            raise ValueError(f"narration segment index is not contiguous at line {line_index}")
+        if segment_index == current_segment_index + 1:
+            segment_text = "\n".join(current_lines)
+            if len(segment_text) > MAX_NARRATION_SEGMENT_CHARS:
+                raise ValueError(f"narration segment {current_segment_index} exceeds 500 characters")
+            segments.append(segment_text)
+            current_segment_index = segment_index
+            current_lines = []
+        current_lines.append(sentence_text)
+        expected_line_index += 1
+    segment_text = "\n".join(current_lines)
+    if len(segment_text) > MAX_NARRATION_SEGMENT_CHARS:
+        raise ValueError(f"narration segment {current_segment_index} exceeds 500 characters")
+    segments.append(segment_text)
+    return segments
 
 
 def initialize_ready_speaker_task() -> tuple[str, int] | None:
@@ -267,15 +329,21 @@ def initialize_ready_speaker_task() -> tuple[str, int] | None:
         cur = _dict_cursor(conn)
         cur.execute(
             """
-            SELECT sp.task_id, vi.task_type, pn.text AS narration_text
+            SELECT sp.task_id, vi.task_type
             FROM speaker sp
             JOIN task t ON t.id = sp.task_id
             JOIN video_info vi ON vi.task_id = sp.task_id
             LEFT JOIN translator tr ON tr.task_id = sp.task_id
-            LEFT JOIN product_narration pn ON pn.task_id = sp.task_id
             WHERE sp.status = %s
               AND (
-                (vi.task_type = 'narration' AND NULLIF(TRIM(pn.text), '') IS NOT NULL)
+                (
+                  vi.task_type = 'narration'
+                  AND EXISTS (
+                    SELECT 1
+                    FROM product_narration_sentence narration_sentence
+                    WHERE narration_sentence.task_id = sp.task_id
+                  )
+                )
                 OR (vi.task_type <> 'narration' AND tr.status = %s)
               )
               AND t.status <> 'failed'
@@ -297,7 +365,17 @@ def initialize_ready_speaker_task() -> tuple[str, int] | None:
         task_id = str(row["task_id"])
         cur = conn.cursor()
         if row.get("task_type") == "narration":
-            lines = [line.strip() for line in str(row.get("narration_text") or "").splitlines() if line.strip()]
+            sentence_cur = _dict_cursor(conn)
+            sentence_cur.execute(
+                f"""
+                SELECT line_index, sentence_text, segment_index
+                FROM {PRODUCT_NARRATION_SENTENCE_TABLE}
+                WHERE task_id = %s
+                ORDER BY line_index ASC
+                """,
+                (task_id,),
+            )
+            segments = _build_narration_segments(list(sentence_cur.fetchall()))
             cur.executemany(
                 """
                 INSERT INTO speaker_segment
@@ -308,8 +386,8 @@ def initialize_ready_speaker_task() -> tuple[str, int] | None:
                 VALUES (%s, %s, %s, %s, %s, 'zh', 'zh', 0, 0, NULL)
                 """,
                 [
-                    (task_id, item_index, SEGMENT_READY, line, line)
-                    for item_index, line in enumerate(lines)
+                    (task_id, item_index, SEGMENT_READY, segment_text, segment_text)
+                    for item_index, segment_text in enumerate(segments)
                 ],
             )
             inserted = int(cur.rowcount)

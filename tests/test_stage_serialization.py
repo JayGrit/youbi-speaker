@@ -65,15 +65,33 @@ class InitCursor(FakeCursor):
 
 
 class NarrationInitCursor(InitCursor):
+    def __init__(self) -> None:
+        super().__init__()
+        self.selected_sentences = False
+
+    def execute(self, sql, params=()) -> None:
+        super().execute(sql, params)
+        if "FROM product_narration_sentence" in sql and "SELECT line_index" in sql:
+            self.selected_sentences = True
+
     def fetchone(self):
         if self.selected_task:
             self.selected_task = False
             return {
                 "task_id": "narration-7",
                 "task_type": "narration",
-                "narration_text": " 第一行。\n\n第二行。 \r\n第三行。",
             }
         return None
+
+    def fetchall(self):
+        if self.selected_sentences:
+            self.selected_sentences = False
+            return [
+                {"line_index": 1, "sentence_text": "第一行。", "segment_index": 1},
+                {"line_index": 2, "sentence_text": "第二行。", "segment_index": 1},
+                {"line_index": 3, "sentence_text": "第三行。", "segment_index": 2},
+            ]
+        return []
 
 
 class StageSerializationTest(unittest.TestCase):
@@ -142,7 +160,7 @@ class StageSerializationTest(unittest.TestCase):
             cursor.params,
         )
 
-    def test_narration_creates_one_segment_per_nonempty_line(self) -> None:
+    def test_narration_groups_sentence_rows_by_segment_index(self) -> None:
         cursor = NarrationInitCursor()
         with (
             patch.object(db, "connect", return_value=FakeConnection(cursor)),
@@ -150,16 +168,30 @@ class StageSerializationTest(unittest.TestCase):
         ):
             initialized = db.initialize_ready_speaker_task()
 
-        self.assertEqual(("narration-7", 3), initialized)
+        self.assertEqual(("narration-7", 2), initialized)
         self.assertIn("VALUES (%s, %s, %s, %s, %s", cursor.sql)
         self.assertEqual(
             [
-                ("narration-7", 0, db.SEGMENT_READY, "第一行。", "第一行。"),
-                ("narration-7", 1, db.SEGMENT_READY, "第二行。", "第二行。"),
-                ("narration-7", 2, db.SEGMENT_READY, "第三行。", "第三行。"),
+                ("narration-7", 0, db.SEGMENT_READY, "第一行。\n第二行。", "第一行。\n第二行。"),
+                ("narration-7", 1, db.SEGMENT_READY, "第三行。", "第三行。"),
             ],
             cursor.params,
         )
+
+    def test_narration_segment_builder_rejects_non_contiguous_segment_indexes(self) -> None:
+        with self.assertRaisesRegex(ValueError, "segment index is not contiguous"):
+            db._build_narration_segments(
+                [
+                    {"line_index": 1, "sentence_text": "第一行。", "segment_index": 1},
+                    {"line_index": 2, "sentence_text": "第二行。", "segment_index": 3},
+                ]
+            )
+
+    def test_narration_segment_builder_requires_first_segment_to_be_one(self) -> None:
+        with self.assertRaisesRegex(ValueError, "segment index is not contiguous"):
+            db._build_narration_segments(
+                [{"line_index": 1, "sentence_text": "第一行。", "segment_index": 2}]
+            )
 
     def test_narration_can_finalize_without_translator(self) -> None:
         cursor = FakeCursor()
