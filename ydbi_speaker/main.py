@@ -126,7 +126,14 @@ def handle_segment(row: dict) -> tuple[Path, Path]:
     if row.get("task_type") == "narration":
         reference = _download_narration_reference(session)
         target_text = sanitize_target_text(row.get("dst_text"))
-        output = generate_tts_segment(target_text, item_index, reference, reference, session)
+        output = generate_tts_segment(
+            target_text,
+            item_index,
+            reference,
+            reference,
+            session,
+            progress_label=f"{task_id}:{item_index}",
+        )
         return reference, output
 
     vocals = _download_vocals(row, session)
@@ -147,7 +154,14 @@ def handle_segment(row: dict) -> tuple[Path, Path]:
 
     fallback = fallback_reference(vocals_dir)
     try:
-        output = generate_tts_segment(target_text, item_index, global_reference, fallback, session)
+        output = generate_tts_segment(
+            target_text,
+            item_index,
+            global_reference,
+            fallback,
+            session,
+            progress_label=f"{task_id}:{item_index}",
+        )
     except ValueError as exc:
         if not _is_empty_target_text_error(exc):
             raise
@@ -265,7 +279,6 @@ def run_segment_worker() -> None:
                         output_path,
                         output_url,
                     )
-                    log.info("%s:%d succeeded", task_id, item_index)
                     finalizable = db.find_finalizable_speaker_task(task_id)
                     if finalizable:
                         finalize_task(finalizable)

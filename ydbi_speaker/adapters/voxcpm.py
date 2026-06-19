@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import contextvars
 import math
 import operator
 import os
@@ -30,6 +31,7 @@ configure_pydub_ffmpeg()
 _MODEL = None
 _WHITESPACE_RE = re.compile(r"\s+")
 _PROGRESS_TOTAL_DIVISOR = 5
+_PROGRESS_LABEL: contextvars.ContextVar[str] = contextvars.ContextVar("voxcpm_progress_label", default="")
 
 
 class _CappedVisualProgress(tqdm):
@@ -52,9 +54,11 @@ def _chinese_progress(iterable, *args, **kwargs):
         original_total = operator.length_hint(iterable, 0)
     if original_total:
         kwargs["total"] = math.ceil(original_total / _PROGRESS_TOTAL_DIVISOR)
+    label = _PROGRESS_LABEL.get()
+    desc = f"正在生成语音 {label}" if label else "正在生成语音"
     kwargs.update(
-        desc="正在生成语音",
-        unit="步",
+        desc=desc,
+        bar_format="{desc}: {percentage:3.0f}%|{bar}|",
         dynamic_ncols=True,
         file=sys.stdout,
     )
@@ -167,6 +171,7 @@ def generate_tts_segment(
     reference: Path,
     fallback: Path,
     session: Path,
+    progress_label: str = "",
 ) -> Path:
     output_dir = session / "segments" / "tts"
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -184,12 +189,16 @@ def generate_tts_segment(
         raise ValueError("target text must be a non-empty string after sanitization")
 
     model = _load_model()
-    with open(os.devnull, "w") as devnull, contextlib.redirect_stderr(devnull):
-        wav = model.generate(
-            text=target_text,
-            reference_wav_path=str(reference_file),
-            cfg_value=VOXCPM_CFG_VALUE,
-            inference_timesteps=VOXCPM_INFERENCE_TIMESTEPS,
-        )
+    progress_token = _PROGRESS_LABEL.set(progress_label)
+    try:
+        with open(os.devnull, "w") as devnull, contextlib.redirect_stderr(devnull):
+            wav = model.generate(
+                text=target_text,
+                reference_wav_path=str(reference_file),
+                cfg_value=VOXCPM_CFG_VALUE,
+                inference_timesteps=VOXCPM_INFERENCE_TIMESTEPS,
+            )
+    finally:
+        _PROGRESS_LABEL.reset(progress_token)
     sf.write(output_file, wav, model.tts_model.sample_rate)
     return output_file
