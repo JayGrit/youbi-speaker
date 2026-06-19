@@ -22,6 +22,7 @@ UPLOAD_SUBMISSION_TABLES = (
     "uploader_task_jinritoutiao",
 )
 HEARTBEAT_DEVICE_COLUMNS = ("Macbook Air M4", "Macmini M2", "LPXB", "MY_HP", "LPXB_HP", "TXY")
+NARRATION_OPERATOR = "Macbook Air M4"
 OPERATOR_COLUMN = "operator"
 OPERATOR_COLUMN_DEFINITION = "VARCHAR(128) NULL"
 _heartbeat_schema_ready = False
@@ -365,6 +366,7 @@ def find_ready(stage_name: str) -> dict[str, Any] | None:
 
 
 def find_ready_speaker_segment() -> dict[str, Any] | None:
+    operator = _operator_value()
     ensure_speaker_segment_schema()
     video_info.ensure_schema()
     with connect() as conn:
@@ -413,6 +415,7 @@ def find_ready_speaker_segment() -> dict[str, Any] | None:
             WHERE sp.status IN (%s, %s)
               AND seg.status = %s
               AND (vi.task_type = 'narration' OR tr.status = %s)
+              AND (vi.task_type <> 'narration' OR %s = %s)
               AND t.status <> 'failed'
             ORDER BY
               CASE WHEN tr.status = %s THEN 0 ELSE 1 END,
@@ -427,7 +430,18 @@ def find_ready_speaker_segment() -> dict[str, Any] | None:
               seg.item_index ASC
             LIMIT 1
             """,
-            (SEGMENT_SUCCESS, READY, RUNNING, SEGMENT_READY, SUCCESS, SUCCESS, RUNNING, RUNNING),
+            (
+                SEGMENT_SUCCESS,
+                READY,
+                RUNNING,
+                SEGMENT_READY,
+                SUCCESS,
+                operator,
+                NARRATION_OPERATOR,
+                SUCCESS,
+                RUNNING,
+                RUNNING,
+            ),
         )
         return video_info.merge_into(cur.fetchone())
 
@@ -452,9 +466,18 @@ def claim_speaker_segment(segment_id: int) -> dict[str, Any] | None:
             WHERE seg.id = %s
               AND seg.status = %s
               AND (vi.task_type = 'narration' OR tr.status = %s)
+              AND (vi.task_type <> 'narration' OR %s = %s)
               AND t.status <> 'failed'
             """,
-            (SEGMENT_RUNNING, operator, segment_id, SEGMENT_READY, SUCCESS),
+            (
+                SEGMENT_RUNNING,
+                operator,
+                segment_id,
+                SEGMENT_READY,
+                SUCCESS,
+                operator,
+                NARRATION_OPERATOR,
+            ),
         )
         if cur.rowcount != 1:
             conn.commit()

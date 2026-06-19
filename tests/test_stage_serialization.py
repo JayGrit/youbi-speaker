@@ -103,6 +103,45 @@ class StageSerializationTest(unittest.TestCase):
         self.assertIn("vi.task_type = 'narration' OR tr.status = %s", cursor.sql)
         self.assertEqual(db.SUCCESS, cursor.params[4])
 
+    def test_ready_segment_query_limits_narration_to_macbook_air_m4(self) -> None:
+        cursor = FakeCursor()
+        with (
+            patch.object(db, "connect", return_value=FakeConnection(cursor)),
+            patch.object(db, "ensure_speaker_segment_schema"),
+            patch.object(db.video_info, "ensure_schema"),
+            patch.object(db.video_info, "merge_into", side_effect=lambda row: row),
+            patch.object(db, "_ensure_staged_account_columns_cur"),
+            patch.object(db, "_operator_value", return_value="MY_HP"),
+        ):
+            self.assertIsNone(db.find_ready_speaker_segment())
+
+        self.assertIn("vi.task_type <> 'narration' OR %s = %s", cursor.sql)
+        self.assertEqual(("MY_HP", db.NARRATION_OPERATOR), cursor.params[5:7])
+
+    def test_claim_segment_rechecks_narration_operator(self) -> None:
+        cursor = FakeCursor()
+        with (
+            patch.object(db, "connect", return_value=FakeConnection(cursor)),
+            patch.object(db.video_info, "ensure_schema"),
+            patch.object(db, "_ensure_operator_columns"),
+            patch.object(db, "_operator_value", return_value="MY_HP"),
+        ):
+            self.assertIsNone(db.claim_speaker_segment(12))
+
+        self.assertIn("vi.task_type <> 'narration' OR %s = %s", cursor.sql)
+        self.assertEqual(
+            (
+                db.SEGMENT_RUNNING,
+                "MY_HP",
+                12,
+                db.SEGMENT_READY,
+                db.SUCCESS,
+                "MY_HP",
+                db.NARRATION_OPERATOR,
+            ),
+            cursor.params,
+        )
+
     def test_narration_creates_one_segment_per_nonempty_line(self) -> None:
         cursor = NarrationInitCursor()
         with (
