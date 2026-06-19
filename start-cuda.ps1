@@ -136,21 +136,44 @@ function Get-GitHead {
 }
 
 function Update-Repository {
-  $Before = Get-GitHead
-  if (-not $Before) {
+  $LocalHead = Get-GitHead
+  if (-not $LocalHead) {
     Write-Warning "Not a git repository or git is unavailable; skipping auto update."
     return $false
   }
 
   Write-Host "Checking for updates..."
-  & git -C $Root pull --ff-only
+  & git -C $Root fetch --quiet origin "+refs/heads/main:refs/remotes/origin/main"
   if ($LASTEXITCODE -ne 0) {
-    Write-Warning "git pull failed; keeping current process running."
+    Write-Warning "git fetch origin/main failed; keeping current process running."
     return $false
   }
 
-  $After = Get-GitHead
-  return ($After -and $After -ne $Before)
+  $RemoteHead = (& git -C $Root rev-parse refs/remotes/origin/main 2>$null).Trim()
+  if (-not $RemoteHead) {
+    Write-Warning "origin/main was not found after fetch; keeping current process running."
+    return $false
+  }
+
+  if ($RemoteHead -eq $LocalHead) {
+    Write-Host "No new version on origin/main."
+    return $false
+  }
+
+  & git -C $Root merge-base --is-ancestor $LocalHead $RemoteHead
+  if ($LASTEXITCODE -ne 0) {
+    Write-Warning "Local HEAD and origin/main have diverged; automatic update skipped."
+    return $false
+  }
+
+  Write-Host "New origin/main version found: $($RemoteHead.Substring(0, 7))"
+  & git -C $Root merge --ff-only $RemoteHead
+  if ($LASTEXITCODE -ne 0) {
+    Write-Warning "Fast-forward update failed; keeping current process running."
+    return $false
+  }
+
+  return ((Get-GitHead) -eq $RemoteHead)
 }
 
 $Process = Start-SpeakerProcess
