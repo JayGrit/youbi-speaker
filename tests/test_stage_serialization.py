@@ -62,18 +62,20 @@ class InitCursor(FakeCursor):
     def __init__(self) -> None:
         super().__init__()
         self.selected_task = False
+        self.select_sql = ""
 
     def execute(self, sql, params=()) -> None:
         super().execute(sql, params)
         if "SELECT sp.task_id" in sql:
             self.selected_task = True
+            self.select_sql = sql
         if "INSERT INTO speaker_segment" in sql:
             self.rowcount = 2
 
     def fetchone(self):
         if self.selected_task:
             self.selected_task = False
-            return {"task_id": "task-1", "task_type": "dubbing"}
+            return {"task_id": "task-1", "sub_stage": "main", "task_type": "dubbing"}
         return None
 
 
@@ -92,6 +94,7 @@ class NarrationInitCursor(InitCursor):
             self.selected_task = False
             return {
                 "task_id": "narration-7",
+                "sub_stage": "narration",
                 "task_type": "narration",
             }
         return None
@@ -117,6 +120,7 @@ class StageSerializationTest(unittest.TestCase):
             initialized = db.initialize_ready_speaker_task()
 
         self.assertEqual(("task-1", 2), initialized)
+        self.assertIn("sp.sub_stage = %s", cursor.select_sql)
         self.assertIn("FROM translator_segment", cursor.sql)
         self.assertEqual((db.SEGMENT_READY, "task-1"), cursor.params)
 
@@ -131,10 +135,10 @@ class StageSerializationTest(unittest.TestCase):
         ):
             self.assertIsNone(db.find_ready_speaker_segment())
 
-        self.assertIn("vi.task_type = 'narration' OR tr.status = %s", cursor.sql)
-        self.assertEqual(db.SUCCESS, cursor.params[4])
+        self.assertIn("sp.sub_stage = %s AND vi.task_type <> 'narration' AND tr.status = %s", cursor.sql)
+        self.assertEqual(db.SUCCESS, cursor.params[8])
 
-    def test_ready_segment_query_allows_narration_on_any_operator(self) -> None:
+    def test_ready_segment_query_targets_narration_sub_stage(self) -> None:
         cursor = FakeCursor()
         with (
             patch.object(db, "connect", return_value=FakeConnection(cursor)),
@@ -145,10 +149,12 @@ class StageSerializationTest(unittest.TestCase):
         ):
             self.assertIsNone(db.find_ready_speaker_segment())
 
-        self.assertNotIn("vi.task_type <> 'narration'", cursor.sql)
-        self.assertEqual(db.SUCCESS, cursor.params[5])
+        self.assertIn("WHEN vi.task_type = 'narration' THEN %s", cursor.sql)
+        self.assertIn("sp.sub_stage = %s AND vi.task_type = 'narration'", cursor.sql)
+        self.assertEqual(db.SPEAKER_NARRATION_SUB_STAGE, cursor.params[1])
+        self.assertEqual(db.SPEAKER_NARRATION_SUB_STAGE, cursor.params[6])
 
-    def test_claim_segment_allows_narration_on_any_operator(self) -> None:
+    def test_claim_segment_filters_by_speaker_sub_stage(self) -> None:
         cursor = FakeCursor()
         with (
             patch.object(db, "connect", return_value=FakeConnection(cursor)),
@@ -158,13 +164,20 @@ class StageSerializationTest(unittest.TestCase):
         ):
             self.assertIsNone(db.claim_speaker_segment(12))
 
-        self.assertNotIn("vi.task_type <> 'narration'", cursor.sql)
+        self.assertIn("WHEN vi.task_type = 'narration' THEN %s", cursor.sql)
+        self.assertIn("sp.status IN (%s, %s)", cursor.sql)
         self.assertEqual(
             (
+                db.SPEAKER_NARRATION_SUB_STAGE,
+                db.SPEAKER_MAIN_SUB_STAGE,
                 db.SEGMENT_RUNNING,
                 "MY_HP",
                 12,
                 db.SEGMENT_READY,
+                db.READY,
+                db.RUNNING,
+                db.SPEAKER_NARRATION_SUB_STAGE,
+                db.SPEAKER_MAIN_SUB_STAGE,
                 db.SUCCESS,
             ),
             cursor.params,
@@ -224,7 +237,20 @@ class StageSerializationTest(unittest.TestCase):
             self.assertIsNone(db.find_finalizable_speaker_task("narration-7"))
 
         self.assertIn("LEFT JOIN translator", cursor.sql)
-        self.assertIn("vi.task_type = 'narration' OR tr.status = %s", cursor.sql)
+        self.assertIn("sp.sub_stage = %s AND vi.task_type = 'narration'", cursor.sql)
+        self.assertIn("sp.sub_stage = %s AND vi.task_type <> 'narration' AND tr.status = %s", cursor.sql)
+
+    def test_terminal_failed_task_returns_sub_stage(self) -> None:
+        cursor = FakeCursor()
+        with (
+            patch.object(db, "connect", return_value=FakeConnection(cursor)),
+            patch.object(db, "ensure_speaker_segment_schema"),
+        ):
+            self.assertIsNone(db.find_terminal_failed_speaker_task("narration-7"))
+
+        self.assertIn("SELECT sp.task_id", cursor.sql)
+        self.assertIn("sp.sub_stage", cursor.sql)
+        self.assertIn("sp.sub_stage = %s AND vi.task_type = 'narration'", cursor.sql)
 
 
 if __name__ == "__main__":

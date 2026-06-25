@@ -120,23 +120,27 @@ def _prepare_references(task_id: str, vocals: Path, session: Path) -> tuple[Path
     return global_reference, segment_paths
 
 
-def handle_segment(row: dict) -> tuple[Path, Path]:
+def handle_narration_segment(row: dict) -> tuple[Path, Path]:
     task_id = row["task_id"]
     session = storage.task_work_dir(task_id)
     item_index = int(row["item_index"])
-    if row.get("task_type") == "narration":
-        reference = _download_narration_reference(session)
-        target_text = sanitize_target_text(row.get("dst_text"))
-        output = generate_tts_segment(
-            target_text,
-            item_index,
-            reference,
-            reference,
-            session,
-            progress_label=f"{task_id}:{item_index}",
-        )
-        return reference, stabilize_narration_audio(output, session)
+    reference = _download_narration_reference(session)
+    target_text = sanitize_target_text(row.get("dst_text"))
+    output = generate_tts_segment(
+        target_text,
+        item_index,
+        reference,
+        reference,
+        session,
+        progress_label=f"{task_id}:{item_index}",
+    )
+    return reference, stabilize_narration_audio(output, session)
 
+
+def handle_main_segment(row: dict) -> tuple[Path, Path]:
+    task_id = row["task_id"]
+    session = storage.task_work_dir(task_id)
+    item_index = int(row["item_index"])
     vocals = _download_vocals(row, session)
     vocals_dir = session / "segments" / "vocals"
     global_reference, segment_paths = _prepare_references(task_id, vocals, session)
@@ -175,6 +179,12 @@ def handle_segment(row: dict) -> tuple[Path, Path]:
     return segment_reference, output
 
 
+def handle_segment(row: dict) -> tuple[Path, Path]:
+    if row.get("speaker_sub_stage") == db.SPEAKER_NARRATION_SUB_STAGE or row.get("task_type") == "narration":
+        return handle_narration_segment(row)
+    return handle_main_segment(row)
+
+
 def publish_segment_outputs(task_id: str, reference: Path, output: Path) -> tuple[str, str, str, str]:
     reference_url = storage.upload(
         reference,
@@ -191,13 +201,14 @@ def publish_segment_outputs(task_id: str, reference: Path, output: Path) -> tupl
 
 def finalize_task(row: dict) -> None:
     task_id = row["task_id"]
+    sub_stage = str(row.get("sub_stage") or row.get("speaker_sub_stage") or db.SPEAKER_MAIN_SUB_STAGE)
     tts_dir = storage.object_prefix(f"{task_id}/speaker/tts")
     translation_ref = f"db://speaker_segment/{task_id}"
     fields = {
         "translation_json_path": translation_ref,
         "tts_segments_dir": tts_dir,
     }
-    db.mark_success(SERVICE_NAME, task_id, fields)
+    db.mark_success(SERVICE_NAME, task_id, fields, sub_stage)
     shutil.rmtree(storage.task_work_path(task_id), ignore_errors=True)
     log.info("speaker task %s finalized", task_id)
 
@@ -245,6 +256,7 @@ def run_segment_worker() -> None:
                         SERVICE_NAME,
                         task_id,
                         f"speaker input text is empty for task: {task_id}",
+                        db.SPEAKER_NARRATION_SUB_STAGE if task_id.startswith("narration-") else db.SPEAKER_MAIN_SUB_STAGE,
                     )
                     continue
                 log.info("speaker task=%s initialized %d segment(s)", task_id, segment_count)
@@ -255,7 +267,11 @@ def run_segment_worker() -> None:
 
             failed = db.find_terminal_failed_speaker_task()
             if failed:
-                db.mark_speaker_failed_from_segment(failed["task_id"], failed["error_message"])
+                db.mark_speaker_failed_from_segment(
+                    failed["task_id"],
+                    failed["error_message"],
+                    str(failed.get("sub_stage") or db.SPEAKER_MAIN_SUB_STAGE),
+                )
                 continue
 
             row = db.find_ready_speaker_segment()
@@ -289,7 +305,11 @@ def run_segment_worker() -> None:
                     if exhausted:
                         failed = db.find_terminal_failed_speaker_task(task_id)
                         if failed:
-                            db.mark_speaker_failed_from_segment(failed["task_id"], failed["error_message"])
+                            db.mark_speaker_failed_from_segment(
+                                failed["task_id"],
+                                failed["error_message"],
+                                str(failed.get("sub_stage") or db.SPEAKER_MAIN_SUB_STAGE),
+                            )
                 continue
         except Exception:
             log.exception("speaker failed to poll segment queue; retrying in %ss", POLL_INTERVAL_SECONDS)
