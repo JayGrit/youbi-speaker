@@ -53,6 +53,43 @@ class NarrationAudioAdjustTests(unittest.TestCase):
         self.assertEqual((reference, adjusted), result)
         stabilize.assert_called_once_with(generated, session)
 
+    def test_handle_segment_balances_dubbing_multi_segment_output(self) -> None:
+        vocals = Path("/tmp/vocals.wav")
+        global_reference = Path("/tmp/global-reference.wav")
+        generated = Path("/tmp/generated.wav")
+        adjusted = Path("/tmp/adjusted.wav")
+        session = Path("/tmp/dubbing-multi-task")
+        row = {
+            "task_id": "task-multi",
+            "task_type": "dubbing_multi_segment",
+            "speaker_sub_stage": "dubbing_multi_segment",
+            "item_index": 3,
+            "start_time": 1000,
+            "end_time": 4000,
+            "dst_text": "中文片段",
+        }
+
+        with (
+            patch("ydbi_speaker.main.storage.task_work_dir", return_value=session),
+            patch("ydbi_speaker.main._download_vocals", return_value=vocals),
+            patch("ydbi_speaker.main._prepare_references", return_value=(global_reference, {})),
+            patch("ydbi_speaker.main.fallback_reference", return_value=global_reference),
+            patch("ydbi_speaker.main.generate_tts_segment", return_value=generated) as generate,
+            patch("ydbi_speaker.main.balance_generated_audio", return_value=adjusted) as balance,
+        ):
+            result = handle_segment(row)
+
+        self.assertEqual((global_reference, adjusted), result)
+        generate.assert_called_once_with(
+            "中文片段",
+            3,
+            global_reference,
+            global_reference,
+            session,
+            progress_label="task-multi:chunk:3",
+        )
+        balance.assert_called_once_with(generated, session)
+
 
 if __name__ == "__main__":
     unittest.main()

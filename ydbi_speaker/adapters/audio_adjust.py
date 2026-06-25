@@ -80,7 +80,7 @@ def _peak_limit(audio: np.ndarray) -> np.ndarray:
     return audio
 
 
-def stabilize_narration_audio(input_path: Path, session: Path) -> Path:
+def balance_generated_audio(input_path: Path, session: Path) -> Path:
     output_dir = session / "segments" / "tts_adjusted"
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / input_path.name
@@ -89,7 +89,7 @@ def stabilize_narration_audio(input_path: Path, session: Path) -> Path:
 
     audio, sample_rate = sf.read(input_path, dtype="float32", always_2d=False)
     if audio.size == 0:
-        raise ValueError(f"narration audio is empty: {input_path}")
+        raise ValueError(f"generated audio is empty: {input_path}")
 
     analysis_audio = _to_mono_for_analysis(audio)
     rms_db_before, hop_length = _calculate_rms_db(analysis_audio, sample_rate)
@@ -106,10 +106,14 @@ def stabilize_narration_audio(input_path: Path, session: Path) -> Path:
     sf.write(output_path, adjusted, sample_rate)
     rms_db_after, _ = _calculate_rms_db(_to_mono_for_analysis(adjusted), sample_rate)
     log.info(
-        "speaker narration audio adjusted input=%s output=%s mean_rms_before=%.2f mean_rms_after=%.2f",
+        "speaker generated audio adjusted input=%s output=%s mean_rms_before=%.2f mean_rms_after=%.2f",
         input_path,
         output_path,
         float(np.mean(rms_db_before)),
         float(np.mean(rms_db_after)),
     )
     return output_path
+
+
+def stabilize_narration_audio(input_path: Path, session: Path) -> Path:
+    return balance_generated_audio(input_path, session)

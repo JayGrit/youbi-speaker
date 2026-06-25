@@ -8,7 +8,7 @@ from pathlib import Path
 from ydbi_speaker import db
 from ydbi_speaker import storage
 from ydbi_speaker.adapters.audio import split_audio_segment, split_audio_segments
-from ydbi_speaker.adapters.audio_adjust import stabilize_narration_audio
+from ydbi_speaker.adapters.audio_adjust import balance_generated_audio, stabilize_narration_audio
 from ydbi_speaker.adapters.reference import select_global_reference
 from ydbi_speaker.adapters.voxcpm import fallback_reference, generate_tts_segment, sanitize_target_text
 from ydbi_speaker.config import NARRATION_REFERENCE_AUDIO_URL, POLL_INTERVAL_SECONDS
@@ -179,9 +179,46 @@ def handle_main_segment(row: dict) -> tuple[Path, Path]:
     return segment_reference, output
 
 
+def handle_dubbing_multi_segment(row: dict) -> tuple[Path, Path]:
+    task_id = row["task_id"]
+    session = storage.task_work_dir(task_id)
+    item_index = int(row["item_index"])
+    vocals = _download_vocals(row, session)
+    vocals_dir = session / "segments" / "vocals"
+    global_reference, _segment_paths = _prepare_references(task_id, vocals, session)
+
+    target_text = sanitize_target_text(row.get("dst_text"))
+    if not target_text:
+        log.info("speaker task=%s chunk=%d has no target text; using original chunk audio", task_id, item_index)
+        chunk_reference = split_audio_segment(
+            vocals,
+            item_index,
+            int(row["start_time"]),
+            int(row["end_time"]),
+            session,
+        )
+        return global_reference, balance_generated_audio(chunk_reference, session)
+
+    fallback = fallback_reference(vocals_dir)
+    output = generate_tts_segment(
+        target_text,
+        item_index,
+        global_reference,
+        fallback,
+        session,
+        progress_label=f"{task_id}:chunk:{item_index}",
+    )
+    return global_reference, balance_generated_audio(output, session)
+
+
 def handle_segment(row: dict) -> tuple[Path, Path]:
     if row.get("speaker_sub_stage") == db.SPEAKER_NARRATION_SUB_STAGE or row.get("task_type") == "narration":
         return handle_narration_segment(row)
+    if (
+        row.get("speaker_sub_stage") == db.SPEAKER_DUBBING_MULTI_SEGMENT_SUB_STAGE
+        or row.get("task_type") == db.TASK_TYPE_DUBBING_MULTI_SEGMENT
+    ):
+        return handle_dubbing_multi_segment(row)
     return handle_main_segment(row)
 
 

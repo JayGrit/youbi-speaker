@@ -110,6 +110,7 @@ SEGMENT_RUNNING = "running"
 SEGMENT_SUCCESS = "success"
 SEGMENT_FAILED = "failed"
 TRANSLATOR_SEGMENT_TABLE = "translator_segment"
+TRANSLATOR_CHUNK_TABLE = "translator-chunk"
 _segment_schema_ready = False
 SPEAKER_SEGMENT_EXTRA_COLUMNS = {
     "reference_wav_url": "TEXT",
@@ -120,6 +121,8 @@ SPEAKER_SEGMENT_EXTRA_COLUMNS = {
 }
 SPEAKER_MAIN_SUB_STAGE = "main"
 SPEAKER_NARRATION_SUB_STAGE = "narration"
+SPEAKER_DUBBING_MULTI_SEGMENT_SUB_STAGE = "dubbing_multi_segment"
+TASK_TYPE_DUBBING_MULTI_SEGMENT = "dubbing_multi_segment"
 
 
 def connect():
@@ -167,6 +170,16 @@ def _ensure_speaker_stage_schema_cur(cur) -> None:
           AND sp.sub_stage = %s
         """,
         (SPEAKER_NARRATION_SUB_STAGE, SPEAKER_MAIN_SUB_STAGE),
+    )
+    cur.execute(
+        """
+        UPDATE speaker sp
+        JOIN video_info vi ON vi.task_id = sp.task_id
+        SET sp.sub_stage = %s
+        WHERE vi.task_type = %s
+          AND sp.sub_stage = %s
+        """,
+        (SPEAKER_DUBBING_MULTI_SEGMENT_SUB_STAGE, TASK_TYPE_DUBBING_MULTI_SEGMENT, SPEAKER_MAIN_SUB_STAGE),
     )
     cur.execute(
         """
@@ -357,7 +370,13 @@ def initialize_ready_speaker_task() -> tuple[str, int] | None:
                 )
                 OR (
                   sp.sub_stage = %s
+                  AND vi.task_type = %s
+                  AND tr.status = %s
+                )
+                OR (
+                  sp.sub_stage = %s
                   AND vi.task_type <> 'narration'
+                  AND vi.task_type <> %s
                   AND tr.status = %s
                 )
               )
@@ -371,7 +390,16 @@ def initialize_ready_speaker_task() -> tuple[str, int] | None:
             LIMIT 1
             FOR UPDATE
             """,
-            (READY, SPEAKER_NARRATION_SUB_STAGE, SPEAKER_MAIN_SUB_STAGE, SUCCESS),
+            (
+                READY,
+                SPEAKER_NARRATION_SUB_STAGE,
+                SPEAKER_DUBBING_MULTI_SEGMENT_SUB_STAGE,
+                TASK_TYPE_DUBBING_MULTI_SEGMENT,
+                SUCCESS,
+                SPEAKER_MAIN_SUB_STAGE,
+                TASK_TYPE_DUBBING_MULTI_SEGMENT,
+                SUCCESS,
+            ),
         )
         row = cur.fetchone()
         if not row:
@@ -404,6 +432,40 @@ def initialize_ready_speaker_task() -> tuple[str, int] | None:
                     (task_id, item_index, SEGMENT_READY, segment_text, segment_text)
                     for item_index, segment_text in enumerate(segments)
                 ],
+            )
+            inserted = int(cur.rowcount)
+            conn.commit()
+            return task_id, inserted
+        if row.get("sub_stage") == SPEAKER_DUBBING_MULTI_SEGMENT_SUB_STAGE:
+            chunk_table = _quote_identifier(TRANSLATOR_CHUNK_TABLE)
+            cur.execute(
+                f"""
+                INSERT INTO speaker_segment
+                  (
+                    task_id, item_index, status, src_text, dst_text, src_lang, dst_lang,
+                    start_time, end_time, speaker
+                  )
+                SELECT
+                  tc.task_id,
+                  tc.chunk_index AS item_index,
+                  %s AS status,
+                  COALESCE(GROUP_CONCAT(NULLIF(TRIM(COALESCE(ts.src_text, tc.text)), '') ORDER BY tc.row_order SEPARATOR '\\n'), '') AS src_text,
+                  COALESCE(GROUP_CONCAT(NULLIF(TRIM(ts.dst_text), '') ORDER BY tc.row_order SEPARATOR '\\n'), '') AS dst_text,
+                  MIN(ts.src_lang) AS src_lang,
+                  MAX(ts.dst_lang) AS dst_lang,
+                  MIN(tc.chunk_start_time) AS start_time,
+                  MAX(tc.chunk_end_time) AS end_time,
+                  SUBSTRING_INDEX(GROUP_CONCAT(NULLIF(ts.speaker, '') ORDER BY tc.row_order SEPARATOR ','), ',', 1) AS speaker
+                FROM {chunk_table} tc
+                JOIN {TRANSLATOR_SEGMENT_TABLE} ts
+                  ON ts.task_id = tc.task_id
+                 AND ts.item_index = tc.item_index
+                WHERE tc.task_id = %s
+                  AND tc.row_role = 'normal'
+                GROUP BY tc.task_id, tc.chunk_index
+                ORDER BY tc.chunk_index ASC
+                """,
+                (SEGMENT_READY, task_id),
             )
             inserted = int(cur.rowcount)
             conn.commit()
@@ -476,6 +538,7 @@ def find_ready_speaker_segment() -> dict[str, Any] | None:
               ON sp.task_id = seg.task_id
              AND sp.sub_stage = CASE
                    WHEN vi.task_type = 'narration' THEN %s
+                   WHEN vi.task_type = %s THEN %s
                    ELSE %s
                  END
             LEFT JOIN translator tr ON tr.task_id = seg.task_id
@@ -528,7 +591,8 @@ def find_ready_speaker_segment() -> dict[str, Any] | None:
               AND seg.status = %s
               AND (
                 (sp.sub_stage = %s AND vi.task_type = 'narration')
-                OR (sp.sub_stage = %s AND vi.task_type <> 'narration' AND tr.status = %s)
+                OR (sp.sub_stage = %s AND vi.task_type = %s AND tr.status = %s)
+                OR (sp.sub_stage = %s AND vi.task_type <> 'narration' AND vi.task_type <> %s AND tr.status = %s)
               )
               AND t.status <> 'failed'
             ORDER BY
@@ -545,14 +609,20 @@ def find_ready_speaker_segment() -> dict[str, Any] | None:
             LIMIT 1
             """,
             (
-                SEGMENT_SUCCESS,
                 SPEAKER_NARRATION_SUB_STAGE,
+                TASK_TYPE_DUBBING_MULTI_SEGMENT,
+                SPEAKER_DUBBING_MULTI_SEGMENT_SUB_STAGE,
                 SPEAKER_MAIN_SUB_STAGE,
+                SEGMENT_SUCCESS,
                 READY,
                 RUNNING,
                 SEGMENT_READY,
                 SPEAKER_NARRATION_SUB_STAGE,
+                SPEAKER_DUBBING_MULTI_SEGMENT_SUB_STAGE,
+                TASK_TYPE_DUBBING_MULTI_SEGMENT,
+                SUCCESS,
                 SPEAKER_MAIN_SUB_STAGE,
+                TASK_TYPE_DUBBING_MULTI_SEGMENT,
                 SUCCESS,
                 SUCCESS,
                 RUNNING,
@@ -577,6 +647,7 @@ def claim_speaker_segment(segment_id: int) -> dict[str, Any] | None:
               ON sp.task_id = seg.task_id
              AND sp.sub_stage = CASE
                    WHEN vi.task_type = 'narration' THEN %s
+                   WHEN vi.task_type = %s THEN %s
                    ELSE %s
                  END
             LEFT JOIN translator tr ON tr.task_id = seg.task_id
@@ -590,12 +661,15 @@ def claim_speaker_segment(segment_id: int) -> dict[str, Any] | None:
               AND sp.status IN (%s, %s)
               AND (
                 (sp.sub_stage = %s AND vi.task_type = 'narration')
-                OR (sp.sub_stage = %s AND vi.task_type <> 'narration' AND tr.status = %s)
+                OR (sp.sub_stage = %s AND vi.task_type = %s AND tr.status = %s)
+                OR (sp.sub_stage = %s AND vi.task_type <> 'narration' AND vi.task_type <> %s AND tr.status = %s)
               )
               AND t.status <> 'failed'
             """,
             (
                 SPEAKER_NARRATION_SUB_STAGE,
+                TASK_TYPE_DUBBING_MULTI_SEGMENT,
+                SPEAKER_DUBBING_MULTI_SEGMENT_SUB_STAGE,
                 SPEAKER_MAIN_SUB_STAGE,
                 SEGMENT_RUNNING,
                 operator,
@@ -604,7 +678,11 @@ def claim_speaker_segment(segment_id: int) -> dict[str, Any] | None:
                 READY,
                 RUNNING,
                 SPEAKER_NARRATION_SUB_STAGE,
+                SPEAKER_DUBBING_MULTI_SEGMENT_SUB_STAGE,
+                TASK_TYPE_DUBBING_MULTI_SEGMENT,
+                SUCCESS,
                 SPEAKER_MAIN_SUB_STAGE,
+                TASK_TYPE_DUBBING_MULTI_SEGMENT,
                 SUCCESS,
             ),
         )
@@ -834,6 +912,7 @@ def recycle_stale_speaker_segments() -> tuple[int, list[str]]:
               ON sp.task_id = seg.task_id
              AND sp.sub_stage = CASE
                    WHEN vi.task_type = 'narration' THEN %s
+                   WHEN vi.task_type = %s THEN %s
                    ELSE %s
                  END
             JOIN task t ON t.id = seg.task_id
@@ -847,6 +926,8 @@ def recycle_stale_speaker_segments() -> tuple[int, list[str]]:
             """,
             (
                 SPEAKER_NARRATION_SUB_STAGE,
+                TASK_TYPE_DUBBING_MULTI_SEGMENT,
+                SPEAKER_DUBBING_MULTI_SEGMENT_SUB_STAGE,
                 SPEAKER_MAIN_SUB_STAGE,
                 SEGMENT_FAILED,
                 READY,
@@ -864,6 +945,7 @@ def recycle_stale_speaker_segments() -> tuple[int, list[str]]:
               ON sp.task_id = seg.task_id
              AND sp.sub_stage = CASE
                    WHEN vi.task_type = 'narration' THEN %s
+                   WHEN vi.task_type = %s THEN %s
                    ELSE %s
                  END
             JOIN task t ON t.id = seg.task_id
@@ -883,6 +965,8 @@ def recycle_stale_speaker_segments() -> tuple[int, list[str]]:
             """,
             (
                 SPEAKER_NARRATION_SUB_STAGE,
+                TASK_TYPE_DUBBING_MULTI_SEGMENT,
+                SPEAKER_DUBBING_MULTI_SEGMENT_SUB_STAGE,
                 SPEAKER_MAIN_SUB_STAGE,
                 SEGMENT_READY,
                 failed_recycle_message,
@@ -912,6 +996,10 @@ def recycle_stale_speaker_segments() -> tuple[int, list[str]]:
                           SELECT 1 FROM video_info vi
                           WHERE vi.task_id = sp.task_id AND vi.task_type = 'narration'
                         ) THEN %s
+                        WHEN EXISTS (
+                          SELECT 1 FROM video_info vi
+                          WHERE vi.task_id = sp.task_id AND vi.task_type = %s
+                        ) THEN %s
                         ELSE %s
                       END
                   AND sp.status = %s
@@ -921,6 +1009,8 @@ def recycle_stale_speaker_segments() -> tuple[int, list[str]]:
                     RUNNING,
                     *recycled_failed_task_ids,
                     SPEAKER_NARRATION_SUB_STAGE,
+                    TASK_TYPE_DUBBING_MULTI_SEGMENT,
+                    SPEAKER_DUBBING_MULTI_SEGMENT_SUB_STAGE,
                     SPEAKER_MAIN_SUB_STAGE,
                     FAILED,
                 ),
@@ -936,7 +1026,11 @@ def find_finalizable_speaker_task(task_id: str | None = None) -> dict[str, Any] 
         READY,
         RUNNING,
         SPEAKER_NARRATION_SUB_STAGE,
+        SPEAKER_DUBBING_MULTI_SEGMENT_SUB_STAGE,
+        TASK_TYPE_DUBBING_MULTI_SEGMENT,
+        SUCCESS,
         SPEAKER_MAIN_SUB_STAGE,
+        TASK_TYPE_DUBBING_MULTI_SEGMENT,
         SUCCESS,
     ]
     if task_id is not None:
@@ -954,7 +1048,8 @@ def find_finalizable_speaker_task(task_id: str | None = None) -> dict[str, Any] 
             WHERE sp.status IN (%s, %s)
               AND (
                 (sp.sub_stage = %s AND vi.task_type = 'narration')
-                OR (sp.sub_stage = %s AND vi.task_type <> 'narration' AND tr.status = %s)
+                OR (sp.sub_stage = %s AND vi.task_type = %s AND tr.status = %s)
+                OR (sp.sub_stage = %s AND vi.task_type <> 'narration' AND vi.task_type <> %s AND tr.status = %s)
               )
               AND t.status <> 'failed'
               {task_filter}
@@ -978,7 +1073,16 @@ def find_finalizable_speaker_task(task_id: str | None = None) -> dict[str, Any] 
 def find_terminal_failed_speaker_task(task_id: str | None = None) -> dict[str, Any] | None:
     ensure_speaker_segment_schema()
     task_filter = "AND sp.task_id = %s" if task_id is not None else ""
-    params: list[Any] = [READY, RUNNING]
+    params: list[Any] = [
+        SEGMENT_FAILED,
+        READY,
+        RUNNING,
+        SPEAKER_NARRATION_SUB_STAGE,
+        SPEAKER_DUBBING_MULTI_SEGMENT_SUB_STAGE,
+        TASK_TYPE_DUBBING_MULTI_SEGMENT,
+        SPEAKER_MAIN_SUB_STAGE,
+        TASK_TYPE_DUBBING_MULTI_SEGMENT,
+    ]
     if task_id is not None:
         params.append(task_id)
     params.extend([SEGMENT_FAILED, SEGMENT_PENDING, SEGMENT_READY, SEGMENT_RUNNING])
@@ -1007,7 +1111,8 @@ def find_terminal_failed_speaker_task(task_id: str | None = None) -> dict[str, A
             WHERE sp.status IN (%s, %s)
               AND (
                 (sp.sub_stage = %s AND vi.task_type = 'narration')
-                OR (sp.sub_stage = %s AND vi.task_type <> 'narration')
+                OR (sp.sub_stage = %s AND vi.task_type = %s)
+                OR (sp.sub_stage = %s AND vi.task_type <> 'narration' AND vi.task_type <> %s)
               )
               AND t.status <> 'failed'
               {task_filter}
@@ -1024,14 +1129,7 @@ def find_terminal_failed_speaker_task(task_id: str | None = None) -> dict[str, A
             ORDER BY sp.task_id ASC
             LIMIT 1
             """,
-            (
-                SEGMENT_FAILED,
-                READY,
-                RUNNING,
-                SPEAKER_NARRATION_SUB_STAGE,
-                SPEAKER_MAIN_SUB_STAGE,
-                *(params[2:] if task_id is not None else params[2:]),
-            ),
+            params,
         )
         return cur.fetchone()
 
@@ -1156,7 +1254,7 @@ def mark_success(
         video_info.upsert(task_id, fields, cur)
         cur.execute(
             f"UPDATE {table} SET {', '.join(assignments)} WHERE task_id = %s AND sub_stage = %s",
-            values,
+            tuple(values),
         )
         conn.commit()
 
