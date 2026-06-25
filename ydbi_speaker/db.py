@@ -18,12 +18,7 @@ HEARTBEAT_TABLE = "service_heartbeat"
 SUBMISSION_TABLE = "downloader_submission"
 UPLOADER_ACCOUNT_TABLE = "uploader_account"
 UPLOAD_SUBMISSION_TABLES = (
-    "uploader_task_bilibili",
-    "uploader_task_douyin",
-    "uploader_task_xiaohongshu",
-    "uploader_task_shipinhao",
-    "uploader_task_kuaishou",
-    "uploader_task_jinritoutiao",
+    "uploader_task",
 )
 HEARTBEAT_DEVICE_COLUMNS = ("Macbook Air M4", "Macmini M2", "LPXB", "MY_HP", "LPXB_HP", "TXY")
 PRODUCT_NARRATION_SENTENCE_TABLE = "product_narration_sentence"
@@ -79,22 +74,8 @@ def _ensure_staged_account_columns_cur(cur) -> bool:
             f"""
             ALTER TABLE {UPLOADER_ACCOUNT_TABLE}
             ADD COLUMN downloader_max_staged_count INT NOT NULL DEFAULT 5
-            """
-        )
-    if not _staged_column_exists_cur(cur, UPLOADER_ACCOUNT_TABLE, "staged_running_count"):
-        cur.execute(
-            f"""
-            ALTER TABLE {UPLOADER_ACCOUNT_TABLE}
-            ADD COLUMN staged_running_count INT NOT NULL DEFAULT 0
-            """
-        )
-    if not _staged_column_exists_cur(cur, UPLOADER_ACCOUNT_TABLE, "staged_failed_count"):
-        cur.execute(
-            f"""
-            ALTER TABLE {UPLOADER_ACCOUNT_TABLE}
-            ADD COLUMN staged_failed_count INT NOT NULL DEFAULT 0
-            """
-        )
+                """
+            )
     return True
 
 
@@ -119,36 +100,7 @@ def _task_has_upload_submission_cur(cur, task_id: str, account_key: str) -> bool
 
 
 def _apply_staged_pipeline_failure_cur(cur, task_id: str, old_task_status: str | None) -> None:
-    if str(old_task_status or "").strip().lower() == FAILED:
-        return
-    if not _ensure_staged_account_columns_cur(cur) or not _staged_table_exists_cur(cur, SUBMISSION_TABLE):
-        return
-    cur.execute(
-        f"""
-        SELECT type
-        FROM {SUBMISSION_TABLE}
-        WHERE task_id = %s
-          AND status = %s
-          AND NULLIF(type, '') IS NOT NULL
-        FOR UPDATE
-        """,
-        (task_id, SUCCESS),
-    )
-    row = cur.fetchone()
-    account_key = str(_row_value(row) if row else "").strip()
-    if not account_key or _task_has_upload_submission_cur(cur, task_id, account_key):
-        return
-    cur.execute(
-        f"""
-        UPDATE {UPLOADER_ACCOUNT_TABLE}
-        SET staged_running_count = GREATEST(staged_running_count - 1, 0),
-            staged_failed_count = staged_failed_count + 1,
-            metrics_updated_at = NOW(),
-            updated_at = NOW()
-        WHERE account_key = %s
-        """,
-        (account_key,),
-    )
+    return
 
 
 SEGMENT_PENDING = "pending"
@@ -474,15 +426,30 @@ def find_ready_speaker_segment() -> dict[str, Any] | None:
                 SELECT submission.task_id,
                        MAX(
                            CASE
-                             WHEN account.cooldown_waiting_count < account.downloader_max_staged_count
+                             WHEN (
+                               SELECT COUNT(*)
+                               FROM uploader_task upload_submission
+                               WHERE upload_submission.account_key = account.account_key
+                                 AND upload_submission.status IN ('ready', 'running')
+                             ) < account.downloader_max_staged_count
                              THEN 1
                              ELSE 0
                            END
                        ) AS has_cooldown_capacity,
                        MIN(
                            CASE
-                             WHEN account.cooldown_waiting_count < account.downloader_max_staged_count
-                             THEN account.cooldown_waiting_count
+                             WHEN (
+                               SELECT COUNT(*)
+                               FROM uploader_task upload_submission
+                               WHERE upload_submission.account_key = account.account_key
+                                 AND upload_submission.status IN ('ready', 'running')
+                             ) < account.downloader_max_staged_count
+                             THEN (
+                               SELECT COUNT(*)
+                               FROM uploader_task upload_submission
+                               WHERE upload_submission.account_key = account.account_key
+                                 AND upload_submission.status IN ('ready', 'running')
+                             )
                              ELSE NULL
                            END
                        ) AS min_available_cooldown
