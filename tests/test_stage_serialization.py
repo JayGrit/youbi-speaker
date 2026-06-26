@@ -1,7 +1,18 @@
 from __future__ import annotations
 
+import sys
+import types
 import unittest
 from unittest.mock import patch
+
+try:
+    import mysql.connector  # noqa: F401
+except ModuleNotFoundError:
+    mysql_module = types.ModuleType("mysql")
+    connector_module = types.ModuleType("mysql.connector")
+    mysql_module.connector = connector_module
+    sys.modules["mysql"] = mysql_module
+    sys.modules["mysql.connector"] = connector_module
 
 from ydbi_speaker import db
 
@@ -125,6 +136,18 @@ class DubbingMultiSegmentInitCursor(InitCursor):
         return None
 
 
+class DubbingChunkAlignedInitCursor(DubbingMultiSegmentInitCursor):
+    def fetchone(self):
+        if self.selected_task:
+            self.selected_task = False
+            return {
+                "task_id": "task-chunk-aligned",
+                "sub_stage": db.SPEAKER_DUBBING_MULTI_SEGMENT_SUB_STAGE,
+                "task_type": db.TASK_TYPE_DUBBING_CHUNK_ALIGNED,
+            }
+        return None
+
+
 class StageSerializationTest(unittest.TestCase):
     def test_speaker_creates_its_segments_from_translator_output(self) -> None:
         cursor = InitCursor()
@@ -148,12 +171,25 @@ class StageSerializationTest(unittest.TestCase):
             initialized = db.initialize_ready_speaker_task()
 
         self.assertEqual(("task-multi", 2), initialized)
-        self.assertIn("vi.task_type = %s", cursor.select_sql)
+        self.assertIn("vi.task_type IN (%s, %s)", cursor.select_sql)
         self.assertIn("FROM `translator-chunk` tc", cursor.sql)
         self.assertIn("tc.chunk_index AS item_index", cursor.sql)
         self.assertIn("MIN(tc.chunk_start_time) AS start_time", cursor.sql)
         self.assertIn("MAX(tc.chunk_end_time) AS end_time", cursor.sql)
         self.assertEqual((db.SEGMENT_READY, "task-multi"), cursor.params)
+
+    def test_dubbing_chunk_aligned_creates_segments_from_translator_chunks(self) -> None:
+        cursor = DubbingChunkAlignedInitCursor()
+        with (
+            patch.object(db, "connect", return_value=FakeConnection(cursor)),
+            patch.object(db, "ensure_speaker_segment_schema"),
+        ):
+            initialized = db.initialize_ready_speaker_task()
+
+        self.assertEqual(("task-chunk-aligned", 2), initialized)
+        self.assertIn("FROM `translator-chunk` tc", cursor.sql)
+        self.assertIn("tc.chunk_index AS item_index", cursor.sql)
+        self.assertEqual((db.SEGMENT_READY, "task-chunk-aligned"), cursor.params)
 
     def test_ready_segment_query_requires_translator_success(self) -> None:
         cursor = FakeCursor()
@@ -166,8 +202,8 @@ class StageSerializationTest(unittest.TestCase):
         ):
             self.assertIsNone(db.find_ready_speaker_segment())
 
-        self.assertIn("sp.sub_stage = %s AND vi.task_type = %s AND tr.status = %s", cursor.sql)
-        self.assertIn("sp.sub_stage = %s AND vi.task_type <> 'narration' AND vi.task_type <> %s", cursor.sql)
+        self.assertIn("sp.sub_stage = %s AND vi.task_type IN (%s, %s) AND tr.status = %s", cursor.sql)
+        self.assertIn("sp.sub_stage = %s AND vi.task_type <> 'narration' AND vi.task_type NOT IN (%s, %s)", cursor.sql)
         self.assertNotIn("WITH candidate_segments AS", cursor.sql)
         self.assertNotIn("JOIN candidate_tasks candidate_task", cursor.sql)
         self.assertIn(db.SUCCESS, cursor.params)
@@ -184,10 +220,10 @@ class StageSerializationTest(unittest.TestCase):
             self.assertIsNone(db.find_ready_speaker_segment())
 
         self.assertIn("WHEN vi.task_type = 'narration' THEN %s", cursor.sql)
-        self.assertIn("WHEN vi.task_type = %s THEN %s", cursor.sql)
+        self.assertIn("WHEN vi.task_type IN (%s, %s) THEN %s", cursor.sql)
         self.assertIn("sp.sub_stage = %s AND vi.task_type = 'narration'", cursor.sql)
         self.assertEqual(db.SPEAKER_NARRATION_SUB_STAGE, cursor.params[0])
-        self.assertEqual(db.SPEAKER_NARRATION_SUB_STAGE, cursor.params[7])
+        self.assertEqual(db.SPEAKER_NARRATION_SUB_STAGE, cursor.params[8])
 
     def test_claim_segment_filters_by_speaker_sub_stage(self) -> None:
         cursor = FakeCursor()
@@ -204,7 +240,7 @@ class StageSerializationTest(unittest.TestCase):
         self.assertEqual(
             (
                 db.SPEAKER_NARRATION_SUB_STAGE,
-                db.TASK_TYPE_DUBBING_MULTI_SEGMENT,
+                *db.CHUNK_SPEAKER_TASK_TYPES,
                 db.SPEAKER_DUBBING_MULTI_SEGMENT_SUB_STAGE,
                 db.SPEAKER_MAIN_SUB_STAGE,
                 db.SEGMENT_RUNNING,
@@ -215,10 +251,10 @@ class StageSerializationTest(unittest.TestCase):
                 db.RUNNING,
                 db.SPEAKER_NARRATION_SUB_STAGE,
                 db.SPEAKER_DUBBING_MULTI_SEGMENT_SUB_STAGE,
-                db.TASK_TYPE_DUBBING_MULTI_SEGMENT,
+                *db.CHUNK_SPEAKER_TASK_TYPES,
                 db.SUCCESS,
                 db.SPEAKER_MAIN_SUB_STAGE,
-                db.TASK_TYPE_DUBBING_MULTI_SEGMENT,
+                *db.CHUNK_SPEAKER_TASK_TYPES,
                 db.SUCCESS,
             ),
             cursor.params,
@@ -279,8 +315,8 @@ class StageSerializationTest(unittest.TestCase):
 
         self.assertIn("LEFT JOIN translator", cursor.sql)
         self.assertIn("sp.sub_stage = %s AND vi.task_type = 'narration'", cursor.sql)
-        self.assertIn("sp.sub_stage = %s AND vi.task_type = %s AND tr.status = %s", cursor.sql)
-        self.assertIn("vi.task_type <> %s AND tr.status = %s", cursor.sql)
+        self.assertIn("sp.sub_stage = %s AND vi.task_type IN (%s, %s) AND tr.status = %s", cursor.sql)
+        self.assertIn("vi.task_type NOT IN (%s, %s) AND tr.status = %s", cursor.sql)
 
     def test_terminal_failed_task_returns_sub_stage(self) -> None:
         cursor = FakeCursor()
@@ -293,7 +329,7 @@ class StageSerializationTest(unittest.TestCase):
         self.assertIn("SELECT sp.task_id", cursor.sql)
         self.assertIn("sp.sub_stage", cursor.sql)
         self.assertIn("sp.sub_stage = %s AND vi.task_type = 'narration'", cursor.sql)
-        self.assertIn("sp.sub_stage = %s AND vi.task_type = %s", cursor.sql)
+        self.assertIn("sp.sub_stage = %s AND vi.task_type IN (%s, %s)", cursor.sql)
 
 
 if __name__ == "__main__":

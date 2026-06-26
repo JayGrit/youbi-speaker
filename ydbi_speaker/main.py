@@ -216,7 +216,7 @@ def handle_segment(row: dict) -> tuple[Path, Path]:
         return handle_narration_segment(row)
     if (
         row.get("speaker_sub_stage") == db.SPEAKER_DUBBING_MULTI_SEGMENT_SUB_STAGE
-        or row.get("task_type") == db.TASK_TYPE_DUBBING_MULTI_SEGMENT
+        or row.get("task_type") in db.CHUNK_SPEAKER_TASK_TYPES
     ):
         return handle_dubbing_multi_segment(row)
     return handle_main_segment(row)
