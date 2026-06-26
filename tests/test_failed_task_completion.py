@@ -11,7 +11,7 @@ class FailedTaskCompletionTest(unittest.TestCase):
         conn = MagicMock()
         conn.__enter__.return_value = conn
         conn.cursor.return_value.fetchone.return_value = ("failed",)
-        outputs = {"tts_segments_dir": "s3://bucket/tts/"}
+        outputs = {"tts_segments_dir": "http://120.53.92.66:9000/ydbi/tts/"}
 
         with (
             patch.object(db, "connect", return_value=conn),
