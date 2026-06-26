@@ -15,8 +15,7 @@ from .ffmpeg import configure_pydub_ffmpeg
 
 configure_pydub_ffmpeg()
 
-MIN_REFERENCE_MS = 1800
-BEST_MIN_MS = 3000
+MIN_REFERENCE_MS = 5000
 BEST_MAX_MS = 10000
 MAX_REFERENCE_MS = 15000
 TARGET_REFERENCE_MS = 10000
@@ -33,10 +32,10 @@ def _clamp(value: float, low: float, high: float) -> float:
 
 
 def _duration_score(duration_ms: int) -> float:
-    if duration_ms < MIN_REFERENCE_MS:
+    if duration_ms <= MIN_REFERENCE_MS:
         return 0.0
-    if duration_ms < BEST_MIN_MS:
-        return 10.0 + 20.0 * (duration_ms - MIN_REFERENCE_MS) / (BEST_MIN_MS - MIN_REFERENCE_MS)
+    if duration_ms < BEST_MAX_MS:
+        return 30.0 * (duration_ms - MIN_REFERENCE_MS) / (BEST_MAX_MS - MIN_REFERENCE_MS)
     if duration_ms <= BEST_MAX_MS:
         return 30.0
     if duration_ms <= MAX_REFERENCE_MS:
@@ -101,7 +100,7 @@ def _metrics(path: Path, row: Mapping[str, Any]) -> dict[str, Any]:
     stability = _stability_score(audio)
 
     disqualified = (
-        duration_ms < MIN_REFERENCE_MS
+        duration_ms <= MIN_REFERENCE_MS
         or silence_ratio > 0.45
         or rms_db < -35.0
         or rms_db > -8.0
