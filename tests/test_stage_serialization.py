@@ -165,7 +165,9 @@ class StageSerializationTest(unittest.TestCase):
 
         self.assertIn("sp.sub_stage = %s AND vi.task_type = %s AND tr.status = %s", cursor.sql)
         self.assertIn("sp.sub_stage = %s AND vi.task_type <> 'narration' AND vi.task_type <> %s", cursor.sql)
-        self.assertEqual(db.SUCCESS, cursor.params[11])
+        self.assertIn("WITH candidate_segments AS", cursor.sql)
+        self.assertIn("JOIN candidate_tasks candidate_task", cursor.sql)
+        self.assertIn(db.SUCCESS, cursor.params)
 
     def test_ready_segment_query_targets_narration_sub_stage(self) -> None:
         cursor = FakeCursor()
@@ -182,7 +184,7 @@ class StageSerializationTest(unittest.TestCase):
         self.assertIn("WHEN vi.task_type = %s THEN %s", cursor.sql)
         self.assertIn("sp.sub_stage = %s AND vi.task_type = 'narration'", cursor.sql)
         self.assertEqual(db.SPEAKER_NARRATION_SUB_STAGE, cursor.params[0])
-        self.assertEqual(db.SPEAKER_NARRATION_SUB_STAGE, cursor.params[8])
+        self.assertEqual(db.SPEAKER_NARRATION_SUB_STAGE, cursor.params[7])
 
     def test_claim_segment_filters_by_speaker_sub_stage(self) -> None:
         cursor = FakeCursor()

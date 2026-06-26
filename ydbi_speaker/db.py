@@ -27,6 +27,7 @@ OPERATOR_COLUMN = "operator"
 OPERATOR_COLUMN_DEFINITION = "VARCHAR(128) NULL"
 _heartbeat_schema_ready = False
 _speaker_stage_schema_ready = False
+READY_SPEAKER_SEGMENT_CANDIDATE_LIMIT = 2000
 
 
 def _row_value(row: Any, index: int = 0) -> Any:
@@ -65,6 +66,29 @@ def _staged_column_exists_cur(cur, table: str, column: str) -> bool:
     )
     row = cur.fetchone()
     return bool(row and int(_row_value(row)) > 0)
+
+
+def _index_exists_cur(cur, table: str, index_name: str) -> bool:
+    cur.execute(
+        """
+        SELECT COUNT(*)
+        FROM INFORMATION_SCHEMA.STATISTICS
+        WHERE TABLE_SCHEMA = DATABASE()
+          AND TABLE_NAME = %s
+          AND INDEX_NAME = %s
+        """,
+        (table, index_name),
+    )
+    row = cur.fetchone()
+    return bool(row and int(_row_value(row)) > 0)
+
+
+def _ensure_index_cur(cur, table: str, index_name: str, columns_sql: str) -> None:
+    if not _staged_table_exists_cur(cur, table):
+        return
+    if _index_exists_cur(cur, table, index_name):
+        return
+    cur.execute(f"CREATE INDEX {index_name} ON {_quote_identifier(table)} ({columns_sql})")
 
 
 def _ensure_staged_account_columns_cur(cur) -> bool:
@@ -303,6 +327,36 @@ def ensure_speaker_segment_schema() -> None:
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
             """
         )
+        _ensure_index_cur(
+            cur,
+            "speaker_segment",
+            "idx_speaker_segment_status_task_item",
+            "`status`, `task_id`, `item_index`",
+        )
+        _ensure_index_cur(
+            cur,
+            SERVICE_TABLE,
+            "idx_speaker_status_task_substage",
+            "`status`, `task_id`, `sub_stage`",
+        )
+        _ensure_index_cur(
+            cur,
+            "translator",
+            "idx_translator_task_status",
+            "`task_id`, `status`",
+        )
+        _ensure_index_cur(
+            cur,
+            SUBMISSION_TABLE,
+            "idx_downloader_submission_status_type_task",
+            "`status`, `type`, `task_id`",
+        )
+        _ensure_index_cur(
+            cur,
+            "uploader_task",
+            "idx_uploader_task_account_status",
+            "`account_key`, `status`",
+        )
         conn.commit()
     _segment_schema_ready = True
 
@@ -526,13 +580,81 @@ def find_ready_speaker_segment() -> dict[str, Any] | None:
         cur = _dict_cursor(conn)
         _ensure_staged_account_columns_cur(cur)
         cur.execute(
-            """
+            f"""
+            WITH candidate_segments AS (
+                SELECT seg.id, seg.task_id, seg.item_index
+                FROM speaker_segment seg FORCE INDEX (idx_speaker_segment_status_task_item)
+                JOIN video_info vi ON vi.task_id = seg.task_id
+                JOIN speaker sp
+                  ON sp.task_id = seg.task_id
+                 AND sp.sub_stage = CASE
+                       WHEN vi.task_type = 'narration' THEN %s
+                       WHEN vi.task_type = %s THEN %s
+                       ELSE %s
+                     END
+                LEFT JOIN translator tr ON tr.task_id = seg.task_id
+                JOIN task t ON t.id = seg.task_id
+                WHERE seg.status = %s
+                  AND sp.status IN (%s, %s)
+                  AND (
+                    (sp.sub_stage = %s AND vi.task_type = 'narration')
+                    OR (sp.sub_stage = %s AND vi.task_type = %s AND tr.status = %s)
+                    OR (sp.sub_stage = %s AND vi.task_type <> 'narration' AND vi.task_type <> %s AND tr.status = %s)
+                  )
+                  AND t.status <> 'failed'
+                ORDER BY seg.task_id ASC, seg.item_index ASC
+                LIMIT {READY_SPEAKER_SEGMENT_CANDIDATE_LIMIT}
+            ),
+            candidate_tasks AS (
+                SELECT DISTINCT task_id
+                FROM candidate_segments
+            ),
+            stats AS (
+                SELECT seg_stats.task_id,
+                       COUNT(*) AS total_segments,
+                       SUM(CASE WHEN seg_stats.status <> %s THEN 1 ELSE 0 END) AS remaining_segments
+                FROM speaker_segment seg_stats
+                JOIN candidate_tasks candidate_task ON candidate_task.task_id = seg_stats.task_id
+                GROUP BY seg_stats.task_id
+            ),
+            upload_capacity AS (
+                SELECT upload_submission.account_key,
+                       COUNT(*) AS active_count
+                FROM uploader_task upload_submission
+                WHERE upload_submission.status IN (%s, %s)
+                GROUP BY upload_submission.account_key
+            ),
+            account_priority AS (
+                SELECT submission.task_id,
+                       MAX(
+                           CASE
+                             WHEN COALESCE(upload_capacity.active_count, 0) < account.downloader_max_staged_count
+                             THEN 1
+                             ELSE 0
+                           END
+                       ) AS has_cooldown_capacity,
+                       MIN(
+                           CASE
+                             WHEN COALESCE(upload_capacity.active_count, 0) < account.downloader_max_staged_count
+                             THEN COALESCE(upload_capacity.active_count, 0)
+                             ELSE NULL
+                           END
+                       ) AS min_available_cooldown
+                FROM downloader_submission submission FORCE INDEX (idx_downloader_submission_status_type_task)
+                JOIN candidate_tasks candidate_task ON candidate_task.task_id = submission.task_id
+                JOIN uploader_account account ON account.account_key = submission.type
+                LEFT JOIN upload_capacity ON upload_capacity.account_key = account.account_key
+                WHERE submission.status = %s
+                  AND NULLIF(submission.type, '') IS NOT NULL
+                GROUP BY submission.task_id
+            )
             SELECT seg.*,
                    vi.task_type AS task_type,
                    sp.sub_stage AS speaker_sub_stage,
                    vi.audio_vocals_path AS speaker_audio_vocals_path,
                    vi.translation_json_path AS translation_json_path
-            FROM speaker_segment seg
+            FROM candidate_segments candidate_segment
+            JOIN speaker_segment seg ON seg.id = candidate_segment.id
             JOIN video_info vi ON vi.task_id = seg.task_id
             JOIN speaker sp
               ON sp.task_id = seg.task_id
@@ -543,50 +665,8 @@ def find_ready_speaker_segment() -> dict[str, Any] | None:
                  END
             LEFT JOIN translator tr ON tr.task_id = seg.task_id
             JOIN task t ON t.id = seg.task_id
-            JOIN (
-                SELECT task_id,
-                       COUNT(*) AS total_segments,
-                       SUM(CASE WHEN status <> %s THEN 1 ELSE 0 END) AS remaining_segments
-                FROM speaker_segment
-                GROUP BY task_id
-            ) stats ON stats.task_id = seg.task_id
-            LEFT JOIN (
-                SELECT submission.task_id,
-                       MAX(
-                           CASE
-                             WHEN (
-                               SELECT COUNT(*)
-                               FROM uploader_task upload_submission
-                               WHERE upload_submission.account_key = account.account_key
-                                 AND upload_submission.status IN ('ready', 'running')
-                             ) < account.downloader_max_staged_count
-                             THEN 1
-                             ELSE 0
-                           END
-                       ) AS has_cooldown_capacity,
-                       MIN(
-                           CASE
-                             WHEN (
-                               SELECT COUNT(*)
-                               FROM uploader_task upload_submission
-                               WHERE upload_submission.account_key = account.account_key
-                                 AND upload_submission.status IN ('ready', 'running')
-                             ) < account.downloader_max_staged_count
-                             THEN (
-                               SELECT COUNT(*)
-                               FROM uploader_task upload_submission
-                               WHERE upload_submission.account_key = account.account_key
-                                 AND upload_submission.status IN ('ready', 'running')
-                             )
-                             ELSE NULL
-                           END
-                       ) AS min_available_cooldown
-                FROM downloader_submission submission
-                JOIN uploader_account account ON account.account_key = submission.type
-                WHERE submission.status = 'success'
-                  AND NULLIF(submission.type, '') IS NOT NULL
-                GROUP BY submission.task_id
-            ) account_priority ON account_priority.task_id = seg.task_id
+            JOIN stats ON stats.task_id = seg.task_id
+            LEFT JOIN account_priority ON account_priority.task_id = seg.task_id
             WHERE sp.status IN (%s, %s)
               AND seg.status = %s
               AND (
@@ -613,7 +693,24 @@ def find_ready_speaker_segment() -> dict[str, Any] | None:
                 TASK_TYPE_DUBBING_MULTI_SEGMENT,
                 SPEAKER_DUBBING_MULTI_SEGMENT_SUB_STAGE,
                 SPEAKER_MAIN_SUB_STAGE,
+                SEGMENT_READY,
+                READY,
+                RUNNING,
+                SPEAKER_NARRATION_SUB_STAGE,
+                SPEAKER_DUBBING_MULTI_SEGMENT_SUB_STAGE,
+                TASK_TYPE_DUBBING_MULTI_SEGMENT,
+                SUCCESS,
+                SPEAKER_MAIN_SUB_STAGE,
+                TASK_TYPE_DUBBING_MULTI_SEGMENT,
+                SUCCESS,
                 SEGMENT_SUCCESS,
+                READY,
+                RUNNING,
+                SUCCESS,
+                SPEAKER_NARRATION_SUB_STAGE,
+                TASK_TYPE_DUBBING_MULTI_SEGMENT,
+                SPEAKER_DUBBING_MULTI_SEGMENT_SUB_STAGE,
+                SPEAKER_MAIN_SUB_STAGE,
                 READY,
                 RUNNING,
                 SEGMENT_READY,
