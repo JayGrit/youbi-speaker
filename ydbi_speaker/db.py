@@ -581,50 +581,82 @@ def find_ready_speaker_segment() -> dict[str, Any] | None:
         _ensure_staged_account_columns_cur(cur)
         cur.execute(
             f"""
-            WITH candidate_segments AS (
-                SELECT seg.id, seg.task_id, seg.item_index
-                FROM speaker_segment seg FORCE INDEX (idx_speaker_segment_status_task_item)
-                JOIN video_info vi ON vi.task_id = seg.task_id
-                JOIN speaker sp
-                  ON sp.task_id = seg.task_id
-                 AND sp.sub_stage = CASE
-                       WHEN vi.task_type = 'narration' THEN %s
-                       WHEN vi.task_type = %s THEN %s
-                       ELSE %s
-                     END
-                LEFT JOIN translator tr ON tr.task_id = seg.task_id
-                JOIN task t ON t.id = seg.task_id
-                WHERE seg.status = %s
-                  AND sp.status IN (%s, %s)
-                  AND (
-                    (sp.sub_stage = %s AND vi.task_type = 'narration')
-                    OR (sp.sub_stage = %s AND vi.task_type = %s AND tr.status = %s)
-                    OR (sp.sub_stage = %s AND vi.task_type <> 'narration' AND vi.task_type <> %s AND tr.status = %s)
-                  )
-                  AND t.status <> 'failed'
-                ORDER BY seg.task_id ASC, seg.item_index ASC
-                LIMIT {READY_SPEAKER_SEGMENT_CANDIDATE_LIMIT}
+            SELECT seg.id, seg.task_id, seg.item_index
+            FROM speaker_segment seg FORCE INDEX (idx_speaker_segment_status_task_item)
+            JOIN video_info vi ON vi.task_id = seg.task_id
+            JOIN speaker sp
+              ON sp.task_id = seg.task_id
+             AND sp.sub_stage = CASE
+                   WHEN vi.task_type = 'narration' THEN %s
+                   WHEN vi.task_type = %s THEN %s
+                   ELSE %s
+                 END
+            LEFT JOIN translator tr ON tr.task_id = seg.task_id
+            JOIN task t ON t.id = seg.task_id
+            WHERE seg.status = %s
+              AND sp.status IN (%s, %s)
+              AND (
+                (sp.sub_stage = %s AND vi.task_type = 'narration')
+                OR (sp.sub_stage = %s AND vi.task_type = %s AND tr.status = %s)
+                OR (sp.sub_stage = %s AND vi.task_type <> 'narration' AND vi.task_type <> %s AND tr.status = %s)
+              )
+              AND t.status <> 'failed'
+            ORDER BY seg.task_id ASC, seg.item_index ASC
+            LIMIT {READY_SPEAKER_SEGMENT_CANDIDATE_LIMIT}
+            """,
+            (
+                SPEAKER_NARRATION_SUB_STAGE,
+                TASK_TYPE_DUBBING_MULTI_SEGMENT,
+                SPEAKER_DUBBING_MULTI_SEGMENT_SUB_STAGE,
+                SPEAKER_MAIN_SUB_STAGE,
+                SEGMENT_READY,
+                READY,
+                RUNNING,
+                SPEAKER_NARRATION_SUB_STAGE,
+                SPEAKER_DUBBING_MULTI_SEGMENT_SUB_STAGE,
+                TASK_TYPE_DUBBING_MULTI_SEGMENT,
+                SUCCESS,
+                SPEAKER_MAIN_SUB_STAGE,
+                TASK_TYPE_DUBBING_MULTI_SEGMENT,
+                SUCCESS,
             ),
-            candidate_tasks AS (
-                SELECT DISTINCT task_id
-                FROM candidate_segments
-            ),
-            stats AS (
+        )
+        candidate_rows = cur.fetchall()
+        if not candidate_rows:
+            return None
+
+        candidate_segment_ids = [int(row["id"]) for row in candidate_rows]
+        candidate_task_ids = sorted({str(row["task_id"]) for row in candidate_rows})
+        segment_placeholders = ", ".join(["%s"] * len(candidate_segment_ids))
+        task_placeholders = ", ".join(["%s"] * len(candidate_task_ids))
+
+        cur.execute(
+            f"""
+            SELECT seg.*,
+                   vi.task_type AS task_type,
+                   sp.sub_stage AS speaker_sub_stage,
+                   vi.audio_vocals_path AS speaker_audio_vocals_path,
+                   vi.translation_json_path AS translation_json_path
+            FROM speaker_segment seg
+            JOIN video_info vi ON vi.task_id = seg.task_id
+            JOIN speaker sp
+              ON sp.task_id = seg.task_id
+             AND sp.sub_stage = CASE
+                   WHEN vi.task_type = 'narration' THEN %s
+                   WHEN vi.task_type = %s THEN %s
+                   ELSE %s
+                 END
+            LEFT JOIN translator tr ON tr.task_id = seg.task_id
+            JOIN task t ON t.id = seg.task_id
+            JOIN (
                 SELECT seg_stats.task_id,
                        COUNT(*) AS total_segments,
                        SUM(CASE WHEN seg_stats.status <> %s THEN 1 ELSE 0 END) AS remaining_segments
                 FROM speaker_segment seg_stats
-                JOIN candidate_tasks candidate_task ON candidate_task.task_id = seg_stats.task_id
+                WHERE seg_stats.task_id IN ({task_placeholders})
                 GROUP BY seg_stats.task_id
-            ),
-            upload_capacity AS (
-                SELECT upload_submission.account_key,
-                       COUNT(*) AS active_count
-                FROM uploader_task upload_submission
-                WHERE upload_submission.status IN (%s, %s)
-                GROUP BY upload_submission.account_key
-            ),
-            account_priority AS (
+            ) stats ON stats.task_id = seg.task_id
+            LEFT JOIN (
                 SELECT submission.task_id,
                        MAX(
                            CASE
@@ -641,34 +673,22 @@ def find_ready_speaker_segment() -> dict[str, Any] | None:
                            END
                        ) AS min_available_cooldown
                 FROM downloader_submission submission FORCE INDEX (idx_downloader_submission_status_type_task)
-                JOIN candidate_tasks candidate_task ON candidate_task.task_id = submission.task_id
                 JOIN uploader_account account ON account.account_key = submission.type
-                LEFT JOIN upload_capacity ON upload_capacity.account_key = account.account_key
+                LEFT JOIN (
+                    SELECT upload_submission.account_key,
+                           COUNT(*) AS active_count
+                    FROM uploader_task upload_submission
+                    WHERE upload_submission.status IN (%s, %s)
+                    GROUP BY upload_submission.account_key
+                ) upload_capacity ON upload_capacity.account_key = account.account_key
                 WHERE submission.status = %s
                   AND NULLIF(submission.type, '') IS NOT NULL
+                  AND submission.task_id IN ({task_placeholders})
                 GROUP BY submission.task_id
-            )
-            SELECT seg.*,
-                   vi.task_type AS task_type,
-                   sp.sub_stage AS speaker_sub_stage,
-                   vi.audio_vocals_path AS speaker_audio_vocals_path,
-                   vi.translation_json_path AS translation_json_path
-            FROM candidate_segments candidate_segment
-            JOIN speaker_segment seg ON seg.id = candidate_segment.id
-            JOIN video_info vi ON vi.task_id = seg.task_id
-            JOIN speaker sp
-              ON sp.task_id = seg.task_id
-             AND sp.sub_stage = CASE
-                   WHEN vi.task_type = 'narration' THEN %s
-                   WHEN vi.task_type = %s THEN %s
-                   ELSE %s
-                 END
-            LEFT JOIN translator tr ON tr.task_id = seg.task_id
-            JOIN task t ON t.id = seg.task_id
-            JOIN stats ON stats.task_id = seg.task_id
-            LEFT JOIN account_priority ON account_priority.task_id = seg.task_id
+            ) account_priority ON account_priority.task_id = seg.task_id
             WHERE sp.status IN (%s, %s)
               AND seg.status = %s
+              AND seg.id IN ({segment_placeholders})
               AND (
                 (sp.sub_stage = %s AND vi.task_type = 'narration')
                 OR (sp.sub_stage = %s AND vi.task_type = %s AND tr.status = %s)
@@ -693,27 +713,16 @@ def find_ready_speaker_segment() -> dict[str, Any] | None:
                 TASK_TYPE_DUBBING_MULTI_SEGMENT,
                 SPEAKER_DUBBING_MULTI_SEGMENT_SUB_STAGE,
                 SPEAKER_MAIN_SUB_STAGE,
-                SEGMENT_READY,
-                READY,
-                RUNNING,
-                SPEAKER_NARRATION_SUB_STAGE,
-                SPEAKER_DUBBING_MULTI_SEGMENT_SUB_STAGE,
-                TASK_TYPE_DUBBING_MULTI_SEGMENT,
-                SUCCESS,
-                SPEAKER_MAIN_SUB_STAGE,
-                TASK_TYPE_DUBBING_MULTI_SEGMENT,
-                SUCCESS,
                 SEGMENT_SUCCESS,
+                *candidate_task_ids,
                 READY,
                 RUNNING,
                 SUCCESS,
-                SPEAKER_NARRATION_SUB_STAGE,
-                TASK_TYPE_DUBBING_MULTI_SEGMENT,
-                SPEAKER_DUBBING_MULTI_SEGMENT_SUB_STAGE,
-                SPEAKER_MAIN_SUB_STAGE,
+                *candidate_task_ids,
                 READY,
                 RUNNING,
                 SEGMENT_READY,
+                *candidate_segment_ids,
                 SPEAKER_NARRATION_SUB_STAGE,
                 SPEAKER_DUBBING_MULTI_SEGMENT_SUB_STAGE,
                 TASK_TYPE_DUBBING_MULTI_SEGMENT,

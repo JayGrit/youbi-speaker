@@ -24,6 +24,9 @@ class FakeCursor:
     def fetchone(self):
         return None
 
+    def fetchall(self):
+        return []
+
 
 class FakeConnection:
     def __init__(self, cursor: FakeCursor) -> None:
@@ -165,8 +168,8 @@ class StageSerializationTest(unittest.TestCase):
 
         self.assertIn("sp.sub_stage = %s AND vi.task_type = %s AND tr.status = %s", cursor.sql)
         self.assertIn("sp.sub_stage = %s AND vi.task_type <> 'narration' AND vi.task_type <> %s", cursor.sql)
-        self.assertIn("WITH candidate_segments AS", cursor.sql)
-        self.assertIn("JOIN candidate_tasks candidate_task", cursor.sql)
+        self.assertNotIn("WITH candidate_segments AS", cursor.sql)
+        self.assertNotIn("JOIN candidate_tasks candidate_task", cursor.sql)
         self.assertIn(db.SUCCESS, cursor.params)
 
     def test_ready_segment_query_targets_narration_sub_stage(self) -> None:
