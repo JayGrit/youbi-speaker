@@ -9,6 +9,8 @@ import numpy as np
 import soundfile as sf
 
 from ydbi_speaker.adapters.audio_adjust import stabilize_narration_audio
+from ydbi_speaker.adapters.voice_profile import VoiceProfile
+from ydbi_speaker import db
 from ydbi_speaker.main import handle_segment
 
 
@@ -59,6 +61,18 @@ class NarrationAudioAdjustTests(unittest.TestCase):
         generated = Path("/tmp/generated.wav")
         adjusted = Path("/tmp/adjusted.wav")
         session = Path("/tmp/dubbing-multi-task")
+        profile = VoiceProfile(
+            task_id="task-multi",
+            sub_stage=db.SPEAKER_DUBBING_MULTI_SEGMENT_SUB_STAGE,
+            profile_version=1,
+            reference_item_index=0,
+            reference_text="原文",
+            reference_wav=global_reference,
+            reference_wav_url="http://example/reference.wav",
+            reference_embedding_url="http://example/reference.npy",
+            generation_options={},
+            similarity_threshold=0.7,
+        )
         row = {
             "task_id": "task-multi",
             "task_type": "dubbing_multi_segment",
@@ -72,10 +86,10 @@ class NarrationAudioAdjustTests(unittest.TestCase):
         with (
             patch("ydbi_speaker.main.storage.task_work_dir", return_value=session),
             patch("ydbi_speaker.main._download_vocals", return_value=vocals),
-            patch("ydbi_speaker.main._prepare_references", return_value=(global_reference, {})),
-            patch("ydbi_speaker.main.fallback_reference", return_value=global_reference),
+            patch("ydbi_speaker.main.get_or_create_profile", return_value=profile),
             patch("ydbi_speaker.main.generate_tts_segment", return_value=generated) as generate,
             patch("ydbi_speaker.main.balance_generated_audio", return_value=adjusted) as balance,
+            patch("ydbi_speaker.main.record_similarity") as similarity,
         ):
             result = handle_segment(row)
 
@@ -87,8 +101,12 @@ class NarrationAudioAdjustTests(unittest.TestCase):
             global_reference,
             session,
             progress_label="task-multi:chunk:3",
+            prompt_text="原文",
+            combined_cloning=True,
+            generation_options_override={},
         )
         balance.assert_called_once_with(generated, session)
+        similarity.assert_called_once()
 
 
 if __name__ == "__main__":

@@ -10,6 +10,7 @@ import sys
 import unicodedata
 import warnings
 from pathlib import Path
+from typing import Any, Mapping
 
 import soundfile as sf
 from pydub import AudioSegment
@@ -18,12 +19,19 @@ from tqdm import tqdm
 from .ffmpeg import configure_pydub_ffmpeg
 from ..config import (
     VOXCPM_CFG_VALUE,
+    VOXCPM_DENOISE,
     VOXCPM_INFERENCE_TIMESTEPS,
     VOXCPM_LOAD_DENOISER,
+    VOXCPM_MAX_LEN,
     VOXCPM_MIN_REFERENCE_MS,
+    VOXCPM_MIN_LEN,
     VOXCPM_MODEL,
     VOXCPM_MODEL_DIR,
+    VOXCPM_NORMALIZE,
     VOXCPM_OPTIMIZE,
+    VOXCPM_RETRY_BADCASE,
+    VOXCPM_RETRY_BADCASE_MAX_TIMES,
+    VOXCPM_RETRY_BADCASE_RATIO_THRESHOLD,
 )
 
 configure_pydub_ffmpeg()
@@ -165,6 +173,23 @@ def sanitize_target_text(text: object) -> str:
     return _WHITESPACE_RE.sub(" ", "".join(cleaned)).strip()
 
 
+def generation_options() -> dict[str, Any]:
+    options: dict[str, Any] = {
+        "cfg_value": VOXCPM_CFG_VALUE,
+        "inference_timesteps": VOXCPM_INFERENCE_TIMESTEPS,
+        "normalize": VOXCPM_NORMALIZE,
+        "denoise": VOXCPM_DENOISE,
+        "retry_badcase": VOXCPM_RETRY_BADCASE,
+        "retry_badcase_max_times": VOXCPM_RETRY_BADCASE_MAX_TIMES,
+        "retry_badcase_ratio_threshold": VOXCPM_RETRY_BADCASE_RATIO_THRESHOLD,
+    }
+    if VOXCPM_MIN_LEN is not None:
+        options["min_len"] = VOXCPM_MIN_LEN
+    if VOXCPM_MAX_LEN is not None:
+        options["max_len"] = VOXCPM_MAX_LEN
+    return options
+
+
 def generate_tts_segment(
     text: str,
     item_index: int,
@@ -172,6 +197,9 @@ def generate_tts_segment(
     fallback: Path,
     session: Path,
     progress_label: str = "",
+    prompt_text: str | None = None,
+    combined_cloning: bool = False,
+    generation_options_override: Mapping[str, Any] | None = None,
 ) -> Path:
     output_dir = session / "segments" / "tts"
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -192,12 +220,22 @@ def generate_tts_segment(
     progress_token = _PROGRESS_LABEL.set(progress_label)
     try:
         with open(os.devnull, "w") as devnull, contextlib.redirect_stderr(devnull):
-            wav = model.generate(
-                text=target_text,
-                reference_wav_path=str(reference_file),
-                cfg_value=VOXCPM_CFG_VALUE,
-                inference_timesteps=VOXCPM_INFERENCE_TIMESTEPS,
-            )
+            options = dict(generation_options_override or generation_options())
+            if combined_cloning:
+                wav = model.generate(
+                    text=target_text,
+                    prompt_wav_path=str(reference_file),
+                    prompt_text=prompt_text or "",
+                    reference_wav_path=str(reference_file),
+                    **options,
+                )
+            else:
+                wav = model.generate(
+                    text=target_text,
+                    reference_wav_path=str(reference_file),
+                    cfg_value=options["cfg_value"],
+                    inference_timesteps=options["inference_timesteps"],
+                )
     finally:
         _PROGRESS_LABEL.reset(progress_token)
     sf.write(output_file, wav, model.tts_model.sample_rate)

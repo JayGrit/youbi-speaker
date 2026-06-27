@@ -10,8 +10,14 @@ from ydbi_speaker import storage
 from ydbi_speaker.adapters.audio import split_audio_segment, split_audio_segments
 from ydbi_speaker.adapters.audio_adjust import balance_generated_audio, stabilize_narration_audio
 from ydbi_speaker.adapters.reference import select_global_reference
+from ydbi_speaker.adapters.speaker_similarity import record_similarity
 from ydbi_speaker.adapters.voxcpm import fallback_reference, generate_tts_segment, sanitize_target_text
-from ydbi_speaker.config import NARRATION_REFERENCE_AUDIO_URL, POLL_INTERVAL_SECONDS
+from ydbi_speaker.adapters.voice_profile import get_or_create_profile
+from ydbi_speaker.config import (
+    DUBBING_MULTI_SEGMENT_PROFILE_ENABLED,
+    NARRATION_REFERENCE_AUDIO_URL,
+    POLL_INTERVAL_SECONDS,
+)
 from ydbi_speaker.service import SERVICE_NAME
 
 log = logging.getLogger(__name__)
@@ -184,8 +190,34 @@ def handle_dubbing_multi_segment(row: dict) -> tuple[Path, Path]:
     session = storage.task_work_dir(task_id)
     item_index = int(row["item_index"])
     vocals = _download_vocals(row, session)
-    vocals_dir = session / "segments" / "vocals"
-    global_reference, _segment_paths = _prepare_references(task_id, vocals, session)
+    if not DUBBING_MULTI_SEGMENT_PROFILE_ENABLED:
+        vocals_dir = session / "segments" / "vocals"
+        global_reference, _segment_paths = _prepare_references(task_id, vocals, session)
+
+        target_text = sanitize_target_text(row.get("dst_text"))
+        if not target_text:
+            log.info("speaker task=%s chunk=%d has no target text; using original chunk audio", task_id, item_index)
+            chunk_reference = split_audio_segment(
+                vocals,
+                item_index,
+                int(row["start_time"]),
+                int(row["end_time"]),
+                session,
+            )
+            return global_reference, balance_generated_audio(chunk_reference, session)
+
+        fallback = fallback_reference(vocals_dir)
+        output = generate_tts_segment(
+            target_text,
+            item_index,
+            global_reference,
+            fallback,
+            session,
+            progress_label=f"{task_id}:chunk:{item_index}",
+        )
+        return global_reference, balance_generated_audio(output, session)
+
+    profile = get_or_create_profile(task_id, vocals, session)
 
     target_text = sanitize_target_text(row.get("dst_text"))
     if not target_text:
@@ -197,18 +229,24 @@ def handle_dubbing_multi_segment(row: dict) -> tuple[Path, Path]:
             int(row["end_time"]),
             session,
         )
-        return global_reference, balance_generated_audio(chunk_reference, session)
+        adjusted = balance_generated_audio(chunk_reference, session)
+        record_similarity(profile=profile, row=row, generated_wav=adjusted, session=session)
+        return profile.reference_wav, adjusted
 
-    fallback = fallback_reference(vocals_dir)
     output = generate_tts_segment(
         target_text,
         item_index,
-        global_reference,
-        fallback,
+        profile.reference_wav,
+        profile.reference_wav,
         session,
         progress_label=f"{task_id}:chunk:{item_index}",
+        prompt_text=profile.reference_text,
+        combined_cloning=True,
+        generation_options_override=profile.generation_options,
     )
-    return global_reference, balance_generated_audio(output, session)
+    adjusted = balance_generated_audio(output, session)
+    record_similarity(profile=profile, row=row, generated_wav=adjusted, session=session)
+    return profile.reference_wav, adjusted
 
 
 def handle_segment(row: dict) -> tuple[Path, Path]:
@@ -271,6 +309,7 @@ def cleanup_successful_task_work_dirs() -> int:
 def run_segment_worker() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     db.ensure_speaker_segment_schema()
+    db.ensure_speaker_profile_schema()
     log.info("speaker service started; polling segments every %ss", POLL_INTERVAL_SECONDS)
     next_cleanup_at = 0.0
     while True:

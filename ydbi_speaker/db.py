@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import json
 from collections.abc import Mapping
 from typing import Any
 
@@ -136,6 +137,9 @@ SEGMENT_FAILED = "failed"
 TRANSLATOR_SEGMENT_TABLE = "translator_segment"
 TRANSLATOR_CHUNK_TABLE = "translator-chunk"
 _segment_schema_ready = False
+_profile_schema_ready = False
+SPEAKER_VOICE_PROFILE_TABLE = "speaker_voice_profile"
+SPEAKER_SEGMENT_SIMILARITY_TABLE = "speaker_segment_similarity"
 SPEAKER_SEGMENT_EXTRA_COLUMNS = {
     "reference_wav_url": "TEXT",
     "tts_wav_url": "TEXT",
@@ -169,7 +173,12 @@ def _quote_identifier(identifier: str) -> str:
 
 
 def _ensure_columns(cur, table: str, columns: Mapping[str, str]) -> None:
-    return
+    if not _staged_table_exists_cur(cur, table):
+        return
+    for column, definition in columns.items():
+        if _staged_column_exists_cur(cur, table, column):
+            continue
+        cur.execute(f"ALTER TABLE {_quote_identifier(table)} ADD COLUMN {_quote_identifier(column)} {definition}")
 
 
 def ensure_speaker_stage_schema() -> None:
@@ -297,6 +306,7 @@ def ensure_speaker_segment_schema() -> None:
     with connect() as conn:
         cur = conn.cursor()
         _ensure_speaker_stage_schema_cur(cur)
+        _ensure_speaker_profile_schema_cur(cur)
         cur.execute(
             f"""
             CREATE TABLE IF NOT EXISTS {TRANSLATOR_SEGMENT_TABLE} (
@@ -369,6 +379,187 @@ def ensure_speaker_segment_schema() -> None:
         )
         conn.commit()
     _segment_schema_ready = True
+
+
+def ensure_speaker_profile_schema() -> None:
+    global _profile_schema_ready
+    if _profile_schema_ready:
+        return
+    with connect() as conn:
+        cur = conn.cursor()
+        _ensure_speaker_profile_schema_cur(cur)
+        conn.commit()
+    _profile_schema_ready = True
+
+
+def _ensure_speaker_profile_schema_cur(cur) -> None:
+    cur.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS {SPEAKER_VOICE_PROFILE_TABLE} (
+          task_id VARCHAR(64) NOT NULL,
+          sub_stage VARCHAR(64) NOT NULL,
+          profile_version INT NOT NULL,
+          reference_item_index INT NULL,
+          reference_text MEDIUMTEXT NULL,
+          reference_wav_url TEXT NULL,
+          reference_embedding_url TEXT NULL,
+          generation_options_json JSON NULL,
+          similarity_threshold DOUBLE NULL,
+          status VARCHAR(32) NOT NULL DEFAULT 'ready',
+          error_message TEXT NULL,
+          created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          PRIMARY KEY (task_id, sub_stage)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        """
+    )
+    cur.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS {SPEAKER_SEGMENT_SIMILARITY_TABLE} (
+          task_id VARCHAR(64) NOT NULL,
+          segment_id BIGINT UNSIGNED NULL,
+          item_index INT NOT NULL,
+          sub_stage VARCHAR(64) NOT NULL,
+          reference_embedding_url TEXT NULL,
+          generated_embedding_url TEXT NULL,
+          similarity_score DOUBLE NULL,
+          threshold DOUBLE NULL,
+          passed TINYINT(1) NULL,
+          metrics_json JSON NULL,
+          error_message TEXT NULL,
+          created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          UNIQUE KEY uk_speaker_segment_similarity_task_item_stage (task_id, item_index, sub_stage)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        """
+    )
+
+
+def get_voice_profile(task_id: str, sub_stage: str) -> dict[str, Any] | None:
+    ensure_speaker_profile_schema()
+    with connect() as conn:
+        cur = _dict_cursor(conn)
+        cur.execute(
+            f"""
+            SELECT task_id, sub_stage, profile_version, reference_item_index, reference_text,
+                   reference_wav_url, reference_embedding_url, generation_options_json,
+                   similarity_threshold, status, error_message
+            FROM {SPEAKER_VOICE_PROFILE_TABLE}
+            WHERE task_id = %s AND sub_stage = %s
+            """,
+            (task_id, sub_stage),
+        )
+        return cur.fetchone()
+
+
+def upsert_voice_profile(
+    *,
+    task_id: str,
+    sub_stage: str,
+    profile_version: int,
+    reference_item_index: int | None,
+    reference_text: str | None,
+    reference_wav_url: str | None,
+    reference_embedding_url: str | None,
+    generation_options: Mapping[str, Any] | None,
+    similarity_threshold: float | None,
+    status: str = "ready",
+    error_message: str | None = None,
+) -> None:
+    ensure_speaker_profile_schema()
+    generation_options_json = json.dumps(generation_options, ensure_ascii=False) if generation_options is not None else None
+    with connect() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            f"""
+            INSERT INTO {SPEAKER_VOICE_PROFILE_TABLE}
+              (
+                task_id, sub_stage, profile_version, reference_item_index, reference_text,
+                reference_wav_url, reference_embedding_url, generation_options_json,
+                similarity_threshold, status, error_message
+              )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+              profile_version = VALUES(profile_version),
+              reference_item_index = VALUES(reference_item_index),
+              reference_text = VALUES(reference_text),
+              reference_wav_url = VALUES(reference_wav_url),
+              reference_embedding_url = VALUES(reference_embedding_url),
+              generation_options_json = VALUES(generation_options_json),
+              similarity_threshold = VALUES(similarity_threshold),
+              status = VALUES(status),
+              error_message = VALUES(error_message)
+            """,
+            (
+                task_id,
+                sub_stage,
+                profile_version,
+                reference_item_index,
+                reference_text,
+                reference_wav_url,
+                reference_embedding_url,
+                generation_options_json,
+                similarity_threshold,
+                status,
+                error_message,
+            ),
+        )
+        conn.commit()
+
+
+def upsert_segment_similarity(
+    *,
+    task_id: str,
+    segment_id: int | None,
+    item_index: int,
+    sub_stage: str,
+    reference_embedding_url: str | None,
+    generated_embedding_url: str | None,
+    similarity_score: float | None,
+    threshold: float | None,
+    passed: bool | None,
+    metrics: Mapping[str, Any] | None,
+    error_message: str | None = None,
+) -> None:
+    ensure_speaker_profile_schema()
+    metrics_json = json.dumps(metrics, ensure_ascii=False) if metrics is not None else None
+    passed_value = None if passed is None else int(passed)
+    with connect() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            f"""
+            INSERT INTO {SPEAKER_SEGMENT_SIMILARITY_TABLE}
+              (
+                task_id, segment_id, item_index, sub_stage, reference_embedding_url,
+                generated_embedding_url, similarity_score, threshold, passed,
+                metrics_json, error_message
+              )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+              segment_id = VALUES(segment_id),
+              reference_embedding_url = VALUES(reference_embedding_url),
+              generated_embedding_url = VALUES(generated_embedding_url),
+              similarity_score = VALUES(similarity_score),
+              threshold = VALUES(threshold),
+              passed = VALUES(passed),
+              metrics_json = VALUES(metrics_json),
+              error_message = VALUES(error_message)
+            """,
+            (
+                task_id,
+                segment_id,
+                item_index,
+                sub_stage,
+                reference_embedding_url,
+                generated_embedding_url,
+                similarity_score,
+                threshold,
+                passed_value,
+                metrics_json,
+                error_message,
+            ),
+        )
+        conn.commit()
 
 
 def _build_narration_segments(sentence_rows: list[dict[str, Any]]) -> list[str]:
