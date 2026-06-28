@@ -10,6 +10,7 @@ from typing import Any
 from ydbi_speaker import db, storage
 from ydbi_speaker.adapters.audio import split_audio_segments
 from ydbi_speaker.adapters.reference import select_global_reference
+from ydbi_speaker.adapters.speaker_embedding import embedding, save_embedding
 from ydbi_speaker.adapters.voxcpm import fallback_reference, generation_options
 from ydbi_speaker.config import SPEAKER_PROFILE_VERSION, SPEAKER_SIMILARITY_THRESHOLD
 
@@ -100,7 +101,7 @@ def _write_local_profile(profile_dir: Path, payload: dict[str, Any]) -> Path:
     return profile_path
 
 
-def _upsert_profile(profile: VoiceProfile, error_message: str | None = None) -> None:
+def _upsert_profile(profile: VoiceProfile, error_message: str | None = None, status: str = "ready") -> None:
     db.upsert_voice_profile(
         task_id=profile.task_id,
         sub_stage=profile.sub_stage,
@@ -111,9 +112,33 @@ def _upsert_profile(profile: VoiceProfile, error_message: str | None = None) -> 
         reference_embedding_url=profile.reference_embedding_url,
         generation_options=profile.generation_options,
         similarity_threshold=profile.similarity_threshold,
-        status="ready",
+        status=status,
         error_message=error_message,
     )
+
+
+def _ensure_reference_embedding(profile: VoiceProfile, profile_dir: Path) -> None:
+    embedding_path = profile_dir / "reference_embedding.npy"
+    object_name = reference_embedding_object(profile.task_id)
+
+    if not embedding_path.exists() or embedding_path.stat().st_size == 0:
+        try:
+            storage.download(profile.reference_embedding_url, embedding_path, (object_name,))
+        except FileNotFoundError:
+            reference_embedding = embedding(profile.reference_wav)
+            save_embedding(embedding_path, reference_embedding)
+
+    storage.upload(embedding_path, object_name, "application/octet-stream")
+    _upsert_profile(profile)
+
+
+def _ensure_ready_profile(profile: VoiceProfile, profile_dir: Path) -> VoiceProfile:
+    try:
+        _ensure_reference_embedding(profile, profile_dir)
+    except Exception as exc:
+        _upsert_profile(profile, str(exc), status="failed")
+        raise RuntimeError(f"speaker profile embedding is unavailable for task: {profile.task_id}") from exc
+    return profile
 
 
 def _load_existing_profile(task_id: str, session: Path) -> VoiceProfile | None:
@@ -125,7 +150,8 @@ def _load_existing_profile(task_id: str, session: Path) -> VoiceProfile | None:
         payload = _payload_from_db(row)
         try:
             storage.download(str(row["reference_wav_url"]), reference_path, (reference_wav_object(task_id),))
-            return _profile_from_payload(task_id, payload, reference_path)
+            profile = _profile_from_payload(task_id, payload, reference_path)
+            return _ensure_ready_profile(profile, profile_dir)
         except Exception as exc:
             log.warning("speaker task=%s failed to reuse DB voice profile: %s", task_id, exc)
 
@@ -145,7 +171,7 @@ def _load_existing_profile(task_id: str, session: Path) -> VoiceProfile | None:
             storage.download(reference_url, reference_path, (reference_wav_object(task_id),))
             profile = _profile_from_payload(task_id, payload, reference_path)
             _upsert_profile(profile)
-            return profile
+            return _ensure_ready_profile(profile, profile_dir)
         except Exception as exc:
             log.warning("speaker task=%s failed to reuse cached voice profile: %s", task_id, exc)
 
@@ -201,4 +227,4 @@ def get_or_create_profile(task_id: str, vocals: Path, session: Path) -> VoicePro
 
     profile = _profile_from_payload(task_id, payload, reference_path)
     _upsert_profile(profile, "reference_text is empty" if not reference_text else None)
-    return profile
+    return _ensure_ready_profile(profile, profile_dir)

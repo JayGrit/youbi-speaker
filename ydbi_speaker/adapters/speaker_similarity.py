@@ -8,12 +8,11 @@ from typing import Any
 import numpy as np
 
 from ydbi_speaker import db, storage
+from ydbi_speaker.adapters.speaker_embedding import embedding, save_embedding
 from ydbi_speaker.adapters.voice_profile import VoiceProfile, reference_embedding_object
-from ydbi_speaker.config import MODEL_CACHE_DIR, SPEAKER_SIMILARITY_ENABLED
+from ydbi_speaker.config import SPEAKER_SIMILARITY_ENABLED
 
 log = logging.getLogger(__name__)
-
-_ENCODER = None
 
 
 def _similarity_object_prefix(task_id: str) -> str:
@@ -26,38 +25,6 @@ def similarity_json_object(task_id: str, item_index: int) -> str:
 
 def generated_embedding_object(task_id: str, item_index: int) -> str:
     return f"{_similarity_object_prefix(task_id)}/{item_index}.generated_embedding.npy"
-
-
-def _load_encoder():
-    global _ENCODER
-    if _ENCODER is None:
-        try:
-            from speechbrain.inference.speaker import EncoderClassifier
-        except ImportError:
-            from speechbrain.pretrained import EncoderClassifier
-
-        _ENCODER = EncoderClassifier.from_hparams(
-            source="speechbrain/spkrec-ecapa-voxceleb",
-            savedir=str(MODEL_CACHE_DIR / "speechbrain-spkrec-ecapa-voxceleb"),
-        )
-    return _ENCODER
-
-
-def _embedding(path: Path) -> np.ndarray:
-    encoder = _load_encoder()
-    if hasattr(encoder, "encode_file"):
-        encoded = encoder.encode_file(str(path))
-    else:
-        audio = encoder.load_audio(str(path))
-        encoded = encoder.encode_batch(audio.unsqueeze(0))
-    if hasattr(encoded, "detach"):
-        encoded = encoded.detach().cpu().numpy()
-    return np.asarray(encoded, dtype=np.float32).reshape(-1)
-
-
-def _save_embedding(path: Path, embedding: np.ndarray) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    np.save(path, embedding)
 
 
 def _load_or_create_reference_embedding(profile: VoiceProfile, profile_dir: Path) -> tuple[Path, str, np.ndarray]:
@@ -74,10 +41,10 @@ def _load_or_create_reference_embedding(profile: VoiceProfile, profile_dir: Path
     if embedding_path.exists() and embedding_path.stat().st_size > 0:
         return embedding_path, profile.reference_embedding_url, np.load(embedding_path)
 
-    embedding = _embedding(profile.reference_wav)
-    _save_embedding(embedding_path, embedding)
+    reference_embedding = embedding(profile.reference_wav)
+    save_embedding(embedding_path, reference_embedding)
     embedding_url = storage.upload(embedding_path, reference_embedding_object(profile.task_id), "application/octet-stream")
-    return embedding_path, embedding_url, embedding
+    return embedding_path, embedding_url, reference_embedding
 
 
 def _cosine_similarity(left: np.ndarray, right: np.ndarray) -> float:
@@ -121,9 +88,9 @@ def record_similarity(
             profile,
             profile_dir,
         )
-        generated_embedding = _embedding(generated_wav)
+        generated_embedding = embedding(generated_wav)
         generated_embedding_path = profile_dir / "similarity" / f"{item_index}.generated_embedding.npy"
-        _save_embedding(generated_embedding_path, generated_embedding)
+        save_embedding(generated_embedding_path, generated_embedding)
         generated_embedding_url = storage.upload(
             generated_embedding_path,
             generated_embedding_object(task_id, item_index),
