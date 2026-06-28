@@ -20,6 +20,7 @@ from .ffmpeg import configure_pydub_ffmpeg
 from ..config import (
     VOXCPM_CFG_VALUE,
     VOXCPM_DENOISE,
+    VOXCPM_DEVICE,
     VOXCPM_INFERENCE_TIMESTEPS,
     VOXCPM_LOAD_DENOISER,
     VOXCPM_MAX_LEN,
@@ -117,6 +118,49 @@ def _model_path() -> Path:
     raise RuntimeError(f"VoxCPM model directory is not configured; expected bundled model for {VOXCPM_MODEL}")
 
 
+def _voxcpm_will_use_mps() -> bool:
+    device = VOXCPM_DEVICE.strip().lower()
+    try:
+        import torch
+    except ImportError:
+        return False
+
+    has_mps = hasattr(torch.backends, "mps") and torch.backends.mps.is_available()
+    if not has_mps:
+        return False
+    if device == "mps":
+        return True
+    if device not in {"", "auto"}:
+        return False
+    return not torch.cuda.is_available()
+
+
+def _patch_voxcpm_mps_audio_vae() -> None:
+    if not _voxcpm_will_use_mps():
+        return
+
+    import torch
+    import voxcpm.modules.audiovae.audio_vae_v2 as audio_vae_v2
+
+    for name in (
+        "_jit_override_can_fuse_on_gpu",
+        "_jit_set_texpr_fuser_enabled",
+        "_jit_set_nvfuser_enabled",
+    ):
+        setter = getattr(torch._C, name, None)
+        if setter is not None:
+            with contextlib.suppress(Exception):
+                setter(False)
+
+    def snake_eager(x, alpha):
+        shape = x.shape
+        x = x.reshape(shape[0], shape[1], -1)
+        x = x + (alpha + 1e-9).reciprocal() * torch.sin(alpha * x).pow(2)
+        return x.reshape(shape)
+
+    audio_vae_v2.snake = snake_eager
+
+
 def _load_model():
     global _MODEL
     if _MODEL is None:
@@ -131,10 +175,12 @@ def _load_model():
             warnings.simplefilter("ignore", FutureWarning)
             from voxcpm import VoxCPM
 
+            _patch_voxcpm_mps_audio_vae()
             _MODEL = VoxCPM.from_pretrained(
                 str(model_path),
                 load_denoiser=VOXCPM_LOAD_DENOISER,
                 optimize=VOXCPM_OPTIMIZE,
+                device=VOXCPM_DEVICE,
             )
             import voxcpm.model.voxcpm2 as voxcpm2
 
