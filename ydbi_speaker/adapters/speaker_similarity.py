@@ -45,7 +45,11 @@ def _load_encoder():
 
 def _embedding(path: Path) -> np.ndarray:
     encoder = _load_encoder()
-    encoded = encoder.encode_file(str(path))
+    if hasattr(encoder, "encode_file"):
+        encoded = encoder.encode_file(str(path))
+    else:
+        audio = encoder.load_audio(str(path))
+        encoded = encoder.encode_batch(audio.unsqueeze(0))
     if hasattr(encoded, "detach"):
         encoded = encoded.detach().cpu().numpy()
     return np.asarray(encoded, dtype=np.float32).reshape(-1)
