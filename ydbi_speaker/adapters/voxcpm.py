@@ -17,6 +17,7 @@ from pydub import AudioSegment
 from tqdm import tqdm
 
 from .ffmpeg import configure_pydub_ffmpeg
+from .speechbrain_compat import suppress_optional_k2_lazy_import
 from ..config import (
     VOXCPM_CFG_VALUE,
     VOXCPM_DENOISE,
@@ -265,6 +266,7 @@ def generate_tts_segment(
     model = _load_model()
     progress_token = _PROGRESS_LABEL.set(progress_label)
     try:
+        suppress_optional_k2_lazy_import()
         with open(os.devnull, "w") as devnull, contextlib.redirect_stderr(devnull):
             options = dict(generation_options_override or generation_options())
             if combined_cloning:

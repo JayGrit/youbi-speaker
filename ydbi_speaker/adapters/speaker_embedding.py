@@ -4,6 +4,7 @@ from pathlib import Path
 
 import numpy as np
 
+from ydbi_speaker.adapters.speechbrain_compat import suppress_optional_k2_lazy_import
 from ydbi_speaker.config import MODEL_CACHE_DIR
 
 _ENCODER = None
@@ -17,10 +18,12 @@ def _load_encoder():
         except ImportError:
             from speechbrain.pretrained import EncoderClassifier
 
+        suppress_optional_k2_lazy_import()
         _ENCODER = EncoderClassifier.from_hparams(
             source="speechbrain/spkrec-ecapa-voxceleb",
             savedir=str(MODEL_CACHE_DIR / "speechbrain-spkrec-ecapa-voxceleb"),
         )
+        suppress_optional_k2_lazy_import()
     return _ENCODER
 
 
