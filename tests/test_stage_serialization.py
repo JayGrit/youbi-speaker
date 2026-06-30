@@ -260,6 +260,29 @@ class StageSerializationTest(unittest.TestCase):
             cursor.params,
         )
 
+    def test_mark_segment_success_records_current_operator(self) -> None:
+        cursor = FakeCursor()
+        with (
+            patch.object(db, "connect", return_value=FakeConnection(cursor)),
+            patch.object(db, "_operator_value", return_value="MY_HP"),
+        ):
+            db.mark_speaker_segment_success(12, "/tmp/ref.wav", "minio://ref", "/tmp/tts.wav", "minio://tts")
+
+        self.assertIn("started_at = COALESCE(started_at, NOW())", cursor.sql)
+        self.assertIn("`operator` = %s", cursor.sql)
+        self.assertEqual(
+            (
+                db.SEGMENT_SUCCESS,
+                "/tmp/ref.wav",
+                "minio://ref",
+                "/tmp/tts.wav",
+                "minio://tts",
+                "MY_HP",
+                12,
+            ),
+            cursor.params,
+        )
+
     def test_recycle_uses_twenty_minute_timeout_for_narration(self) -> None:
         cursor = RecycleCursor()
         with patch.object(db, "connect", return_value=FakeConnection(cursor)):

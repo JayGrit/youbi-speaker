@@ -1114,6 +1114,7 @@ def mark_speaker_segment_success(
     tts_wav_path: str,
     tts_wav_url: str,
 ) -> None:
+    operator = _operator_value()
     with connect() as conn:
         cur = conn.cursor()
         cur.execute(
@@ -1124,11 +1125,21 @@ def mark_speaker_segment_success(
                 reference_wav_url = %s,
                 tts_wav_path = %s,
                 tts_wav_url = %s,
+                started_at = COALESCE(started_at, NOW()),
                 completed_at = NOW(),
-                error_message = NULL
+                error_message = NULL,
+                `operator` = %s
             WHERE id = %s
             """,
-            (SEGMENT_SUCCESS, reference_wav_path, reference_wav_url, tts_wav_path, tts_wav_url, segment_id),
+            (
+                SEGMENT_SUCCESS,
+                reference_wav_path,
+                reference_wav_url,
+                tts_wav_path,
+                tts_wav_url,
+                operator,
+                segment_id,
+            ),
         )
         conn.commit()
 
