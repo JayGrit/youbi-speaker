@@ -135,7 +135,8 @@ SEGMENT_RUNNING = "running"
 SEGMENT_SUCCESS = "success"
 SEGMENT_FAILED = "failed"
 TRANSLATOR_SEGMENT_TABLE = "translator_segment"
-TRANSLATOR_CHUNK_TABLE = "translator-chunk"
+TRANSLATOR_CHUNK_TABLE = "translator_chunk"
+LEGACY_TRANSLATOR_CHUNK_TABLE = "translator-chunk"
 _segment_schema_ready = False
 _profile_schema_ready = False
 SPEAKER_VOICE_PROFILE_TABLE = "speaker_voice_profile"
@@ -157,6 +158,14 @@ CHUNK_SPEAKER_TASK_TYPES = (
     TASK_TYPE_DUBBING_CHUNK_ALIGNED,
 )
 CHUNK_SPEAKER_TASK_TYPE_PLACEHOLDERS = ", ".join(["%s"] * len(CHUNK_SPEAKER_TASK_TYPES))
+
+
+def _translator_chunk_table_cur(cur) -> str:
+    if _staged_table_exists_cur(cur, TRANSLATOR_CHUNK_TABLE):
+        return TRANSLATOR_CHUNK_TABLE
+    if _staged_table_exists_cur(cur, LEGACY_TRANSLATOR_CHUNK_TABLE):
+        return LEGACY_TRANSLATOR_CHUNK_TABLE
+    return TRANSLATOR_CHUNK_TABLE
 
 
 def connect():
@@ -674,7 +683,7 @@ def initialize_ready_speaker_task() -> tuple[str, int] | None:
             conn.commit()
             return task_id, inserted
         if row.get("sub_stage") == SPEAKER_DUBBING_MULTI_SEGMENT_SUB_STAGE:
-            chunk_table = _quote_identifier(TRANSLATOR_CHUNK_TABLE)
+            chunk_table = _quote_identifier(_translator_chunk_table_cur(cur))
             cur.execute(
                 f"""
                 INSERT INTO speaker_segment

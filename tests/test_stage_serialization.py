@@ -125,27 +125,37 @@ class NarrationInitCursor(InitCursor):
 
 
 class DubbingMultiSegmentInitCursor(InitCursor):
+    task_id = "task-multi"
+    task_type = db.TASK_TYPE_DUBBING_MULTI_SEGMENT
+
+    def __init__(self, existing_tables: set[str] | None = None) -> None:
+        super().__init__()
+        self.existing_tables = existing_tables or {db.TRANSLATOR_CHUNK_TABLE}
+        self.table_exists_result: int | None = None
+
+    def execute(self, sql, params=()) -> None:
+        super().execute(sql, params)
+        if "INFORMATION_SCHEMA.TABLES" in sql:
+            self.table_exists_result = int(params[0] in self.existing_tables)
+
     def fetchone(self):
         if self.selected_task:
             self.selected_task = False
             return {
-                "task_id": "task-multi",
+                "task_id": self.task_id,
                 "sub_stage": db.SPEAKER_DUBBING_MULTI_SEGMENT_SUB_STAGE,
-                "task_type": db.TASK_TYPE_DUBBING_MULTI_SEGMENT,
+                "task_type": self.task_type,
             }
+        if self.table_exists_result is not None:
+            result = (self.table_exists_result,)
+            self.table_exists_result = None
+            return result
         return None
 
 
 class DubbingChunkAlignedInitCursor(DubbingMultiSegmentInitCursor):
-    def fetchone(self):
-        if self.selected_task:
-            self.selected_task = False
-            return {
-                "task_id": "task-chunk-aligned",
-                "sub_stage": db.SPEAKER_DUBBING_MULTI_SEGMENT_SUB_STAGE,
-                "task_type": db.TASK_TYPE_DUBBING_CHUNK_ALIGNED,
-            }
-        return None
+    task_id = "task-chunk-aligned"
+    task_type = db.TASK_TYPE_DUBBING_CHUNK_ALIGNED
 
 
 class StageSerializationTest(unittest.TestCase):
@@ -172,7 +182,7 @@ class StageSerializationTest(unittest.TestCase):
 
         self.assertEqual(("task-multi", 2), initialized)
         self.assertIn("vi.task_type IN (%s, %s)", cursor.select_sql)
-        self.assertIn("FROM `translator-chunk` tc", cursor.sql)
+        self.assertIn("FROM `translator_chunk` tc", cursor.sql)
         self.assertIn("tc.chunk_index AS item_index", cursor.sql)
         self.assertIn("MIN(tc.chunk_start_time) AS start_time", cursor.sql)
         self.assertIn("MAX(tc.chunk_end_time) AS end_time", cursor.sql)
@@ -187,9 +197,21 @@ class StageSerializationTest(unittest.TestCase):
             initialized = db.initialize_ready_speaker_task()
 
         self.assertEqual(("task-chunk-aligned", 2), initialized)
-        self.assertIn("FROM `translator-chunk` tc", cursor.sql)
+        self.assertIn("FROM `translator_chunk` tc", cursor.sql)
         self.assertIn("tc.chunk_index AS item_index", cursor.sql)
         self.assertEqual((db.SEGMENT_READY, "task-chunk-aligned"), cursor.params)
+
+    def test_dubbing_multi_segment_falls_back_to_legacy_translator_chunk_table(self) -> None:
+        cursor = DubbingMultiSegmentInitCursor(existing_tables={db.LEGACY_TRANSLATOR_CHUNK_TABLE})
+        with (
+            patch.object(db, "connect", return_value=FakeConnection(cursor)),
+            patch.object(db, "ensure_speaker_segment_schema"),
+        ):
+            initialized = db.initialize_ready_speaker_task()
+
+        self.assertEqual(("task-multi", 2), initialized)
+        self.assertIn("FROM `translator-chunk` tc", cursor.sql)
+        self.assertEqual((db.SEGMENT_READY, "task-multi"), cursor.params)
 
     def test_ready_segment_query_requires_translator_success(self) -> None:
         cursor = FakeCursor()
