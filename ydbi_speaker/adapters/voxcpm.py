@@ -168,9 +168,6 @@ def _load_model():
         model_path = _model_path()
         print(f"正在加载 VoxCPM 语音模型：{model_path}", flush=True)
         with (
-            open(os.devnull, "w") as devnull,
-            contextlib.redirect_stdout(devnull),
-            contextlib.redirect_stderr(devnull),
             warnings.catch_warnings(),
         ):
             warnings.simplefilter("ignore", FutureWarning)
@@ -267,23 +264,22 @@ def generate_tts_segment(
     progress_token = _PROGRESS_LABEL.set(progress_label)
     try:
         suppress_optional_k2_lazy_import()
-        with open(os.devnull, "w") as devnull, contextlib.redirect_stderr(devnull):
-            options = dict(generation_options_override or generation_options())
-            if combined_cloning:
-                wav = model.generate(
-                    text=target_text,
-                    prompt_wav_path=str(reference_file),
-                    prompt_text=prompt_text or "",
-                    reference_wav_path=str(reference_file),
-                    **options,
-                )
-            else:
-                wav = model.generate(
-                    text=target_text,
-                    reference_wav_path=str(reference_file),
-                    cfg_value=options["cfg_value"],
-                    inference_timesteps=options["inference_timesteps"],
-                )
+        options = dict(generation_options_override or generation_options())
+        if combined_cloning:
+            wav = model.generate(
+                text=target_text,
+                prompt_wav_path=str(reference_file),
+                prompt_text=prompt_text or "",
+                reference_wav_path=str(reference_file),
+                **options,
+            )
+        else:
+            wav = model.generate(
+                text=target_text,
+                reference_wav_path=str(reference_file),
+                cfg_value=options["cfg_value"],
+                inference_timesteps=options["inference_timesteps"],
+            )
     finally:
         _PROGRESS_LABEL.reset(progress_token)
     sf.write(output_file, wav, model.tts_model.sample_rate)

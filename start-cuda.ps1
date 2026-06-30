@@ -71,12 +71,14 @@ try {
   Write-Warning "ffprobe not found; continuing because speaker reads WAV files with an explicit format."
 }
 $env:DEVICE = $Device
+$env:SPEECHBRAIN_SPEAKER_MODEL_DIR = Join-Path $ModelCacheDir "speechbrain-spkrec-ecapa-voxceleb"
 
 Write-Host "Starting youbi-speaker on CUDA"
 Write-Host "Root: $Root"
 Write-Host "Device: $env:DEVICE"
 Write-Host "Model: $VoxCpmModelDir"
 Write-Host "FFmpeg: $env:FFMPEG_BINARY"
+Write-Host "SpeechBrain speaker model: $env:SPEECHBRAIN_SPEAKER_MODEL_DIR"
 Write-Host "Auto update: git pull every 60 seconds"
 if ($env:FFPROBE_BINARY) {
   Write-Host "FFprobe: $env:FFPROBE_BINARY"

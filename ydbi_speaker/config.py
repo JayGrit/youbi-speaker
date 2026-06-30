@@ -50,6 +50,11 @@ WORKFOLDER = WORK_ROOT
 
 MODEL_CACHE_DIR = _path_from_env("MODELSCOPE_CACHE", SERVICE_ROOT / "model")
 VOXCPM_MODEL_DIR = str(_path_from_env("VOXCPM_MODEL_DIR", MODEL_CACHE_DIR / "VoxCPM2"))
+SPEECHBRAIN_SPEAKER_MODEL = os.getenv("SPEECHBRAIN_SPEAKER_MODEL", "speechbrain/spkrec-ecapa-voxceleb")
+SPEECHBRAIN_SPEAKER_MODEL_DIR = _path_from_env(
+    "SPEECHBRAIN_SPEAKER_MODEL_DIR",
+    MODEL_CACHE_DIR / "speechbrain-spkrec-ecapa-voxceleb",
+)
 
 WORK_DIR = WORK_ROOT / "speaker"
 POLL_INTERVAL_SECONDS = 10

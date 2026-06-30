@@ -242,6 +242,7 @@ The script sets:
 - `MODEL_CACHE_DIR=D:\Money\youbi-speaker\data\modelscope`
 - `VOXCPM_MODEL_DIR=D:\Money\youbi-speaker\data\modelscope\OpenBMB__VoxCPM2`
 - `VOXCPM_OPTIMIZE=0`
+- `SPEECHBRAIN_SPEAKER_MODEL_DIR=D:\Money\youbi-speaker\data\modelscope\speechbrain-spkrec-ecapa-voxceleb`
 - `YDBI_SPEAKER_WORK_DIR=D:\Money\youbi-speaker\workfolder\speaker`
 
 Successful startup logs look like:
@@ -339,6 +340,34 @@ git pull
 ```
 
 Do not install `k2` for this service unless you explicitly need SpeechBrain's k2 FSA features.
+
+### HuggingFace SSL error while fetching `speechbrain/spkrec-ecapa-voxceleb`
+
+The SpeechBrain speaker similarity model is used by the similarity judgment path. On Windows machines behind some proxies, HuggingFace requests can fail with:
+
+```text
+certificate verify failed: self-signed certificate in certificate chain
+```
+
+The Windows CUDA startup script keeps similarity enabled and points SpeechBrain at a local model directory first:
+
+```powershell
+$env:SPEECHBRAIN_SPEAKER_MODEL_DIR='D:\Money\youbi-speaker\data\modelscope\speechbrain-spkrec-ecapa-voxceleb'
+```
+
+If that directory contains `hyperparams.yaml`, the service loads the SpeechBrain model from disk and does not contact HuggingFace. If the directory is missing or incomplete, SpeechBrain falls back to HuggingFace and the Windows certificate/proxy chain must be fixed.
+
+To prepare the local model directory, copy or download the full HuggingFace repository `speechbrain/spkrec-ecapa-voxceleb` into:
+
+```text
+D:\Money\youbi-speaker\data\modelscope\speechbrain-spkrec-ecapa-voxceleb
+```
+
+At minimum, the directory must include `hyperparams.yaml` and the files referenced by it. After the local model exists, restart:
+
+```powershell
+.\start-cuda.ps1
+```
 
 ### 6 GB VRAM is tight
 
