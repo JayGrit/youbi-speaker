@@ -240,7 +240,6 @@ def handle_dubbing_multi_segment(row: dict) -> tuple[Path, Path]:
         profile.reference_wav,
         session,
         progress_label=f"{task_id}:chunk:{item_index}",
-        combined_cloning=True,
         generation_options_override=profile.generation_options,
     )
     adjusted = balance_generated_audio(output, session)

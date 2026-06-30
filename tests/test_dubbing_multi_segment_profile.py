@@ -52,7 +52,7 @@ class DubbingMultiSegmentProfileTest(unittest.TestCase):
         self.assertIn("cfg_value", calls[0])
         self.assertIn("inference_timesteps", calls[0])
 
-    def test_dubbing_multi_segment_uses_profile_combined_cloning_without_prompt_text(self) -> None:
+    def test_dubbing_multi_segment_uses_profile_reference_without_combined_cloning(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             session = Path(tmp)
             vocals = session / "vocals.wav"
@@ -102,7 +102,7 @@ class DubbingMultiSegmentProfileTest(unittest.TestCase):
 
         self.assertEqual(reference, reference_result)
         self.assertEqual(adjusted, output_result)
-        self.assertTrue(generate_calls[0]["kwargs"]["combined_cloning"])
+        self.assertNotIn("combined_cloning", generate_calls[0]["kwargs"])
         self.assertNotIn("prompt_text", generate_calls[0]["kwargs"])
         self.assertEqual(reference, generate_calls[0]["args"][2])
         self.assertEqual(reference, generate_calls[0]["args"][3])
