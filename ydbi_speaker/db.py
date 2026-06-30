@@ -1058,6 +1058,43 @@ def list_speaker_segments(task_id: str) -> list[dict[str, Any]]:
         return list(cur.fetchall())
 
 
+def get_speaker_segment(task_id: str, item_index: int) -> dict[str, Any] | None:
+    ensure_speaker_segment_schema()
+    video_info.ensure_schema()
+    with connect() as conn:
+        cur = _dict_cursor(conn)
+        cur.execute(
+            """
+            SELECT seg.*,
+                   vi.task_type AS task_type,
+                   sp.sub_stage AS speaker_sub_stage,
+                   vi.audio_vocals_path AS speaker_audio_vocals_path,
+                   vi.translation_json_path AS translation_json_path
+            FROM speaker_segment seg
+            JOIN video_info vi ON vi.task_id = seg.task_id
+            JOIN speaker sp
+              ON sp.task_id = seg.task_id
+             AND sp.sub_stage = CASE
+                   WHEN vi.task_type = 'narration' THEN %s
+                   WHEN vi.task_type IN (%s, %s) THEN %s
+                   ELSE %s
+                 END
+            WHERE seg.task_id = %s
+              AND seg.item_index = %s
+            LIMIT 1
+            """,
+            (
+                SPEAKER_NARRATION_SUB_STAGE,
+                *CHUNK_SPEAKER_TASK_TYPES,
+                SPEAKER_DUBBING_MULTI_SEGMENT_SUB_STAGE,
+                SPEAKER_MAIN_SUB_STAGE,
+                task_id,
+                item_index,
+            ),
+        )
+        return video_info.merge_into(cur.fetchone())
+
+
 def list_reference_segments(task_id: str) -> list[dict[str, Any]]:
     with connect() as conn:
         cur = _dict_cursor(conn)
