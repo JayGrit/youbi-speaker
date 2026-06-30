@@ -1,5 +1,5 @@
 SERVICE_NAME = "speaker"
-SERVICE_TABLE = "speaker"
+SERVICE_TABLE = "distributor_task_stages"
 
 PENDING = "pending"
 READY = "ready"

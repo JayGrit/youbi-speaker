@@ -193,29 +193,24 @@ def ensure_speaker_stage_schema() -> None:
 
 
 def _ensure_speaker_stage_schema_cur(cur) -> None:
-    if not _staged_column_exists_cur(cur, SERVICE_TABLE, "sub_stage"):
-        cur.execute(
-            f"""
-            ALTER TABLE {SERVICE_TABLE}
-            ADD COLUMN sub_stage VARCHAR(64) NOT NULL DEFAULT 'main' AFTER task_id
-            """
-        )
     cur.execute(
         """
-        UPDATE speaker sp
+        UPDATE distributor_task_stages sp
         JOIN video_info vi ON vi.task_id = sp.task_id
         SET sp.sub_stage = %s
-        WHERE vi.task_type = 'narration'
+        WHERE sp.stage_name = 'speaker'
+          AND vi.task_type = 'narration'
           AND sp.sub_stage = %s
         """,
         (SPEAKER_NARRATION_SUB_STAGE, SPEAKER_MAIN_SUB_STAGE),
     )
     cur.execute(
         """
-        UPDATE speaker sp
+        UPDATE distributor_task_stages sp
         JOIN video_info vi ON vi.task_id = sp.task_id
         SET sp.sub_stage = %s
-        WHERE vi.task_type IN (%s, %s)
+        WHERE sp.stage_name = 'speaker'
+          AND vi.task_type IN (%s, %s)
           AND sp.sub_stage = %s
         """,
         (
@@ -224,26 +219,6 @@ def _ensure_speaker_stage_schema_cur(cur) -> None:
             SPEAKER_MAIN_SUB_STAGE,
         ),
     )
-    cur.execute(
-        """
-        SELECT GROUP_CONCAT(COLUMN_NAME ORDER BY SEQ_IN_INDEX)
-        FROM INFORMATION_SCHEMA.STATISTICS
-        WHERE TABLE_SCHEMA = DATABASE()
-          AND TABLE_NAME = %s
-          AND INDEX_NAME = 'PRIMARY'
-        """,
-        (SERVICE_TABLE,),
-    )
-    row = cur.fetchone()
-    primary_columns = str(_row_value(row) or "") if row else ""
-    if primary_columns != "task_id,sub_stage":
-        cur.execute(
-            f"""
-            ALTER TABLE {SERVICE_TABLE}
-            DROP PRIMARY KEY,
-            ADD PRIMARY KEY (task_id, sub_stage)
-            """
-        )
 
 def _heartbeat_device_column() -> str | None:
     device = os.environ.get("DEVICE", "").strip() or "Macbook Air M4"
@@ -261,8 +236,14 @@ def current_operator() -> str:
 def demucs_operator_for(task_id: str) -> str | None:
     with connect() as conn:
         cur = _dict_cursor(conn)
-        _ensure_operator_columns(cur, ("demucs",))
-        cur.execute("SELECT `operator` FROM demucs WHERE task_id = %s", (task_id,))
+        cur.execute(
+            """
+            SELECT `operator`
+            FROM distributor_task_stages
+            WHERE task_id = %s AND stage_name = 'demucs' AND sub_stage = 'main'
+            """,
+            (task_id,),
+        )
         row = cur.fetchone()
         if not row:
             return None
@@ -608,11 +589,12 @@ def initialize_ready_speaker_task() -> tuple[str, int] | None:
         cur.execute(
             """
             SELECT sp.task_id, sp.sub_stage, vi.task_type
-            FROM speaker sp
+            FROM distributor_task_stages sp
             JOIN task t ON t.id = sp.task_id
             JOIN video_info vi ON vi.task_id = sp.task_id
-            LEFT JOIN translator tr ON tr.task_id = sp.task_id
-            WHERE sp.status = %s
+            LEFT JOIN distributor_task_stages tr ON tr.task_id = sp.task_id AND tr.stage_name = 'translator' AND tr.sub_stage = 'main'
+            WHERE sp.stage_name = 'speaker'
+              AND sp.status = %s
               AND (
                 (
                   sp.sub_stage = %s
@@ -764,12 +746,13 @@ def find_ready(stage_name: str) -> dict[str, Any] | None:
             SELECT s.*
             FROM {table} s
             JOIN task t ON t.id = s.task_id
-            WHERE s.status = %s
+            WHERE s.stage_name = %s
+              AND s.status = %s
               AND t.status <> 'failed'
             ORDER BY s.task_id ASC
             LIMIT 1
             """,
-            (READY,),
+            (stage_name, READY),
         )
         return video_info.merge_into(cur.fetchone())
 
@@ -785,14 +768,15 @@ def find_ready_speaker_segment() -> dict[str, Any] | None:
             SELECT seg.id, seg.task_id, seg.item_index
             FROM speaker_segment seg FORCE INDEX (idx_speaker_segment_status_task_item)
             JOIN video_info vi ON vi.task_id = seg.task_id
-            JOIN speaker sp
+            JOIN distributor_task_stages sp
               ON sp.task_id = seg.task_id
+             AND sp.stage_name = 'speaker'
              AND sp.sub_stage = CASE
                    WHEN vi.task_type = 'narration' THEN %s
                    WHEN vi.task_type IN (%s, %s) THEN %s
                    ELSE %s
                  END
-            LEFT JOIN translator tr ON tr.task_id = seg.task_id
+            LEFT JOIN distributor_task_stages tr ON tr.task_id = seg.task_id AND tr.stage_name = 'translator' AND tr.sub_stage = 'main'
             JOIN task t ON t.id = seg.task_id
             WHERE seg.status = %s
               AND sp.status IN (%s, %s)
@@ -840,14 +824,15 @@ def find_ready_speaker_segment() -> dict[str, Any] | None:
                    vi.translation_json_path AS translation_json_path
             FROM speaker_segment seg
             JOIN video_info vi ON vi.task_id = seg.task_id
-            JOIN speaker sp
+            JOIN distributor_task_stages sp
               ON sp.task_id = seg.task_id
+             AND sp.stage_name = 'speaker'
              AND sp.sub_stage = CASE
                    WHEN vi.task_type = 'narration' THEN %s
                    WHEN vi.task_type IN (%s, %s) THEN %s
                    ELSE %s
                  END
-            LEFT JOIN translator tr ON tr.task_id = seg.task_id
+            LEFT JOIN distributor_task_stages tr ON tr.task_id = seg.task_id AND tr.stage_name = 'translator' AND tr.sub_stage = 'main'
             JOIN task t ON t.id = seg.task_id
             JOIN (
                 SELECT seg_stats.task_id,
@@ -950,14 +935,15 @@ def claim_speaker_segment(segment_id: int) -> dict[str, Any] | None:
             UPDATE speaker_segment seg
             JOIN task t ON t.id = seg.task_id
             JOIN video_info vi ON vi.task_id = seg.task_id
-            JOIN speaker sp
+            JOIN distributor_task_stages sp
               ON sp.task_id = seg.task_id
+             AND sp.stage_name = 'speaker'
              AND sp.sub_stage = CASE
                    WHEN vi.task_type = 'narration' THEN %s
                    WHEN vi.task_type IN (%s, %s) THEN %s
                    ELSE %s
                  END
-            LEFT JOIN translator tr ON tr.task_id = seg.task_id
+            LEFT JOIN distributor_task_stages tr ON tr.task_id = seg.task_id AND tr.stage_name = 'translator' AND tr.sub_stage = 'main'
             SET seg.status = %s,
                 seg.attempt_count = seg.attempt_count + 1,
                 seg.started_at = COALESCE(seg.started_at, NOW()),
@@ -1006,7 +992,9 @@ def claim_speaker_segment(segment_id: int) -> dict[str, Any] | None:
                    vi.audio_vocals_path AS speaker_audio_vocals_path,
                    vi.translation_json_path AS translation_json_path
             FROM speaker_segment seg
-            JOIN speaker sp ON sp.task_id = seg.task_id
+            JOIN distributor_task_stages sp
+              ON sp.task_id = seg.task_id
+             AND sp.stage_name = 'speaker'
             JOIN video_info vi ON vi.task_id = seg.task_id
             WHERE seg.id = %s
             """,
@@ -1017,12 +1005,12 @@ def claim_speaker_segment(segment_id: int) -> dict[str, Any] | None:
             cur = conn.cursor()
             cur.execute(
                 """
-                UPDATE speaker
+                UPDATE distributor_task_stages
                 SET status = %s,
                     started_at = COALESCE(started_at, NOW()),
                     error_message = NULL,
                     `operator` = %s
-                WHERE task_id = %s AND sub_stage = %s AND status = %s
+                WHERE task_id = %s AND stage_name = 'speaker' AND sub_stage = %s AND status = %s
                 """,
                 (RUNNING, operator, row["task_id"], row["speaker_sub_stage"], READY),
             )
@@ -1072,8 +1060,9 @@ def get_speaker_segment(task_id: str, item_index: int) -> dict[str, Any] | None:
                    vi.translation_json_path AS translation_json_path
             FROM speaker_segment seg
             JOIN video_info vi ON vi.task_id = seg.task_id
-            JOIN speaker sp
+            JOIN distributor_task_stages sp
               ON sp.task_id = seg.task_id
+             AND sp.stage_name = 'speaker'
              AND sp.sub_stage = CASE
                    WHEN vi.task_type = 'narration' THEN %s
                    WHEN vi.task_type IN (%s, %s) THEN %s
@@ -1252,8 +1241,9 @@ def recycle_stale_speaker_segments() -> tuple[int, list[str]]:
             SELECT DISTINCT seg.task_id
             FROM speaker_segment seg
             JOIN video_info vi ON vi.task_id = seg.task_id
-            JOIN speaker sp
+            JOIN distributor_task_stages sp
               ON sp.task_id = seg.task_id
+             AND sp.stage_name = 'speaker'
              AND sp.sub_stage = CASE
                    WHEN vi.task_type = 'narration' THEN %s
                    WHEN vi.task_type IN (%s, %s) THEN %s
@@ -1285,8 +1275,9 @@ def recycle_stale_speaker_segments() -> tuple[int, list[str]]:
             """
             UPDATE speaker_segment seg
             JOIN video_info vi ON vi.task_id = seg.task_id
-            JOIN speaker sp
+            JOIN distributor_task_stages sp
               ON sp.task_id = seg.task_id
+             AND sp.stage_name = 'speaker'
              AND sp.sub_stage = CASE
                    WHEN vi.task_type = 'narration' THEN %s
                    WHEN vi.task_type IN (%s, %s) THEN %s
@@ -1325,7 +1316,7 @@ def recycle_stale_speaker_segments() -> tuple[int, list[str]]:
             placeholders = ", ".join(["%s"] * len(recycled_failed_task_ids))
             cur.execute(
                 f"""
-                UPDATE speaker sp
+                UPDATE distributor_task_stages sp
                 JOIN task t ON t.id = sp.task_id
                 SET sp.status = %s,
                     sp.completed_at = NULL,
@@ -1335,6 +1326,7 @@ def recycle_stale_speaker_segments() -> tuple[int, list[str]]:
                     t.completed_at = NULL,
                     t.error_message = NULL
                 WHERE sp.task_id IN ({placeholders})
+                  AND sp.stage_name = 'speaker'
                   AND sp.sub_stage = CASE
                         WHEN EXISTS (
                           SELECT 1 FROM video_info vi
@@ -1367,6 +1359,7 @@ def find_finalizable_speaker_task(task_id: str | None = None) -> dict[str, Any] 
     ensure_speaker_segment_schema()
     task_filter = "AND sp.task_id = %s" if task_id is not None else ""
     params: list[Any] = [
+        "speaker",
         READY,
         RUNNING,
         SPEAKER_NARRATION_SUB_STAGE,
@@ -1385,11 +1378,12 @@ def find_finalizable_speaker_task(task_id: str | None = None) -> dict[str, Any] 
         cur.execute(
             f"""
             SELECT sp.*
-            FROM speaker sp
+            FROM distributor_task_stages sp
             JOIN task t ON t.id = sp.task_id
             JOIN video_info vi ON vi.task_id = sp.task_id
-            LEFT JOIN translator tr ON tr.task_id = sp.task_id
-            WHERE sp.status IN (%s, %s)
+            LEFT JOIN distributor_task_stages tr ON tr.task_id = sp.task_id AND tr.stage_name = 'translator' AND tr.sub_stage = 'main'
+            WHERE sp.stage_name = %s
+              AND sp.status IN (%s, %s)
               AND (
                 (sp.sub_stage = %s AND vi.task_type = 'narration')
                 OR (sp.sub_stage = %s AND vi.task_type IN (%s, %s) AND tr.status = %s)
@@ -1419,6 +1413,7 @@ def find_terminal_failed_speaker_task(task_id: str | None = None) -> dict[str, A
     task_filter = "AND sp.task_id = %s" if task_id is not None else ""
     params: list[Any] = [
         SEGMENT_FAILED,
+        "speaker",
         READY,
         RUNNING,
         SPEAKER_NARRATION_SUB_STAGE,
@@ -1449,10 +1444,11 @@ def find_terminal_failed_speaker_task(task_id: str | None = None) -> dict[str, A
                        ),
                        'one or more speaker segments failed'
                    ) AS error_message
-            FROM speaker sp
+            FROM distributor_task_stages sp
             JOIN task t ON t.id = sp.task_id
             JOIN video_info vi ON vi.task_id = sp.task_id
-            WHERE sp.status IN (%s, %s)
+            WHERE sp.stage_name = %s
+              AND sp.status IN (%s, %s)
               AND (
                 (sp.sub_stage = %s AND vi.task_type = 'narration')
                 OR (sp.sub_stage = %s AND vi.task_type IN (%s, %s))
@@ -1487,8 +1483,9 @@ def list_successful_speaker_task_ids(task_ids: list[str]) -> set[str]:
         cur.execute(
             f"""
             SELECT task_id
-            FROM speaker
-            WHERE status = %s
+            FROM distributor_task_stages
+            WHERE stage_name = 'speaker'
+              AND status = %s
               AND task_id IN ({placeholders})
             """,
             (SUCCESS, *task_ids),
@@ -1521,9 +1518,9 @@ def mark_running(
                 started_at = COALESCE(started_at, NOW()),
                 error_message = NULL,
                 `operator` = %s
-            WHERE task_id = %s AND sub_stage = %s AND status = %s
+            WHERE task_id = %s AND stage_name = %s AND sub_stage = %s AND status = %s
             """,
-            (RUNNING, operator, task_id, sub_stage, READY),
+            (RUNNING, operator, task_id, stage_name, sub_stage, READY),
         )
         stage_updated = cur.rowcount == 1
         if stage_updated:
@@ -1547,6 +1544,7 @@ def _update_stage_fields(
     fields: Mapping[str, Any],
     sub_stage: str = SPEAKER_MAIN_SUB_STAGE,
 ) -> None:
+    return
     table = _service_table_for(stage_name)
     assignments = ", ".join(f"{key} = %s" for key in fields)
     values = list(fields.values()) + [task_id, sub_stage]
@@ -1578,13 +1576,13 @@ def mark_success(
 ) -> None:
     table = _service_table_for(stage_name)
     fields = dict(outputs or {})
-    stage_fields = {key: value for key, value in fields.items() if key not in video_info.COLUMNS}
+    stage_fields: dict[str, Any] = {}
     assignments = ["status = %s", "completed_at = NOW()", "error_message = NULL"]
     values: list[Any] = [SUCCESS]
     for key, value in stage_fields.items():
         assignments.append(f"{key} = %s")
         values.append(value)
-    values.extend([task_id, sub_stage])
+    values.extend([task_id, stage_name, sub_stage])
 
     with connect() as conn:
         cur = conn.cursor()
@@ -1597,7 +1595,7 @@ def mark_success(
         # the task failure, but persist this stage's result and outputs.
         video_info.upsert(task_id, fields, cur)
         cur.execute(
-            f"UPDATE {table} SET {', '.join(assignments)} WHERE task_id = %s AND sub_stage = %s",
+            f"UPDATE {table} SET {', '.join(assignments)} WHERE task_id = %s AND stage_name = %s AND sub_stage = %s",
             tuple(values),
         )
         conn.commit()
@@ -1619,9 +1617,9 @@ def mark_failed(
             f"""
             UPDATE {table}
             SET status = %s, error_message = %s, completed_at = NOW()
-            WHERE task_id = %s AND sub_stage = %s
+            WHERE task_id = %s AND stage_name = %s AND sub_stage = %s
             """,
-            (FAILED, message, task_id, sub_stage),
+            (FAILED, message, task_id, stage_name, sub_stage),
         )
         cur.execute(
             """
