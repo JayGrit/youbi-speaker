@@ -180,6 +180,11 @@ def _voxcpm_from_pretrained_kwargs(from_pretrained: object) -> dict[str, Any]:
     return {name: value for name, value in kwargs.items() if name in parameters}
 
 
+def _is_unexpected_keyword_error(exc: TypeError, keyword: str) -> bool:
+    message = str(exc)
+    return "unexpected keyword argument" in message and repr(keyword) in message
+
+
 def _load_model():
     global _MODEL
     if _MODEL is None:
@@ -192,10 +197,15 @@ def _load_model():
             from voxcpm import VoxCPM
 
             _patch_voxcpm_mps_audio_vae()
-            _MODEL = VoxCPM.from_pretrained(
-                str(model_path),
-                **_voxcpm_from_pretrained_kwargs(VoxCPM.from_pretrained),
-            )
+            model_kwargs = _voxcpm_from_pretrained_kwargs(VoxCPM.from_pretrained)
+            try:
+                _MODEL = VoxCPM.from_pretrained(str(model_path), **model_kwargs)
+            except TypeError as exc:
+                if "device" not in model_kwargs or not _is_unexpected_keyword_error(exc, "device"):
+                    raise
+                model_kwargs.pop("device")
+                print("当前 VoxCPM 版本不支持 device 参数，已自动兼容重试", flush=True)
+                _MODEL = VoxCPM.from_pretrained(str(model_path), **model_kwargs)
             import voxcpm.model.voxcpm2 as voxcpm2
 
             voxcpm2.tqdm = _chinese_progress
