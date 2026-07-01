@@ -128,7 +128,7 @@ def _ensure_reference_embedding(profile: VoiceProfile, profile_dir: Path) -> Non
             reference_embedding = embedding(profile.reference_wav)
             save_embedding(embedding_path, reference_embedding)
 
-    storage.upload(embedding_path, object_name, "application/octet-stream")
+    storage.upload_once(embedding_path, object_name, "application/octet-stream")
     _upsert_profile(profile)
 
 
@@ -149,7 +149,8 @@ def _load_existing_profile(task_id: str, session: Path) -> VoiceProfile | None:
     if row and row.get("reference_wav_url"):
         payload = _payload_from_db(row)
         try:
-            storage.download(str(row["reference_wav_url"]), reference_path, (reference_wav_object(task_id),))
+            if not reference_path.exists() or reference_path.stat().st_size == 0:
+                storage.download(str(row["reference_wav_url"]), reference_path, (reference_wav_object(task_id),))
             profile = _profile_from_payload(task_id, payload, reference_path)
             return _ensure_ready_profile(profile, profile_dir)
         except Exception as exc:
@@ -168,7 +169,8 @@ def _load_existing_profile(task_id: str, session: Path) -> VoiceProfile | None:
         payload = json.loads(profile_path.read_text(encoding="utf-8"))
         reference_url = str(payload.get("reference_wav_url") or storage.object_url(reference_wav_object(task_id)))
         try:
-            storage.download(reference_url, reference_path, (reference_wav_object(task_id),))
+            if not reference_path.exists() or reference_path.stat().st_size == 0:
+                storage.download(reference_url, reference_path, (reference_wav_object(task_id),))
             profile = _profile_from_payload(task_id, payload, reference_path)
             _upsert_profile(profile)
             return _ensure_ready_profile(profile, profile_dir)

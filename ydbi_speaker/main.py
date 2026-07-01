@@ -259,11 +259,9 @@ def handle_segment(row: dict) -> tuple[Path, Path]:
 
 
 def publish_segment_outputs(task_id: str, reference: Path, output: Path) -> tuple[str, str, str, str]:
-    reference_url = storage.upload(
-        reference,
-        f"{task_id}/speaker/vocals/{reference.name}",
-        "audio/wav",
-    )
+    reference_object = f"{task_id}/speaker/vocals/{reference.name}"
+    reference_upload = storage.upload_once if reference.name in {"reference.wav", "narration-reference.wav"} else storage.upload
+    reference_url = reference_upload(reference, reference_object, "audio/wav")
     output_url = storage.upload(
         output,
         f"{task_id}/speaker/tts/{output.name}",

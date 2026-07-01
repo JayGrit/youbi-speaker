@@ -21,6 +21,10 @@ from .config import (
 )
 
 
+_ensured_buckets: set[str] = set()
+_uploaded_objects: set[tuple[str, str]] = set()
+
+
 @dataclass(frozen=True)
 class ObjectRef:
     bucket: str
@@ -50,11 +54,15 @@ def _minio_client() -> Minio:
 
 
 def _ensure_bucket(client: Minio, bucket: str) -> None:
+    if bucket in _ensured_buckets:
+        return
     if client.bucket_exists(bucket):
         client.set_bucket_policy(bucket, _public_read_policy(bucket))
+        _ensured_buckets.add(bucket)
         return
     client.make_bucket(bucket)
     client.set_bucket_policy(bucket, _public_read_policy(bucket))
+    _ensured_buckets.add(bucket)
 
 
 def _public_read_policy(bucket: str) -> str:
@@ -232,4 +240,25 @@ def upload(local_path: Path, object_name: str, content_type: str = "application/
     _ensure_bucket(client, MINIO_BUCKET)
     normalized = object_name.lstrip("/")
     client.fput_object(MINIO_BUCKET, normalized, str(local_path), content_type=content_type)
+    _uploaded_objects.add((MINIO_BUCKET, normalized))
     return object_url(normalized)
+
+
+def upload_once(local_path: Path, object_name: str, content_type: str = "application/octet-stream") -> str:
+    if not local_path.exists() or local_path.stat().st_size == 0:
+        raise FileNotFoundError(f"output does not exist or is empty: {local_path}")
+
+    if STORAGE_BACKEND != "minio":
+        return f"local:{local_path}"
+
+    normalized = object_name.lstrip("/")
+    key = (MINIO_BUCKET, normalized)
+    if key in _uploaded_objects:
+        return object_url(normalized)
+
+    object_info = ObjectRef(MINIO_BUCKET, normalized)
+    if _object_exists(object_info):
+        _uploaded_objects.add(key)
+        return object_url(normalized)
+
+    return upload(local_path, normalized, content_type)
