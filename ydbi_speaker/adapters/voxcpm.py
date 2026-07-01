@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import contextvars
+import inspect
 import math
 import operator
 import os
@@ -162,6 +163,23 @@ def _patch_voxcpm_mps_audio_vae() -> None:
     audio_vae_v2.snake = snake_eager
 
 
+def _voxcpm_from_pretrained_kwargs(from_pretrained: object) -> dict[str, Any]:
+    kwargs: dict[str, Any] = {
+        "load_denoiser": VOXCPM_LOAD_DENOISER,
+        "optimize": VOXCPM_OPTIMIZE,
+        "device": VOXCPM_DEVICE,
+    }
+    try:
+        signature = inspect.signature(from_pretrained)
+    except (TypeError, ValueError):
+        return kwargs
+
+    parameters = signature.parameters
+    if any(parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters.values()):
+        return kwargs
+    return {name: value for name, value in kwargs.items() if name in parameters}
+
+
 def _load_model():
     global _MODEL
     if _MODEL is None:
@@ -176,9 +194,7 @@ def _load_model():
             _patch_voxcpm_mps_audio_vae()
             _MODEL = VoxCPM.from_pretrained(
                 str(model_path),
-                load_denoiser=VOXCPM_LOAD_DENOISER,
-                optimize=VOXCPM_OPTIMIZE,
-                device=VOXCPM_DEVICE,
+                **_voxcpm_from_pretrained_kwargs(VoxCPM.from_pretrained),
             )
             import voxcpm.model.voxcpm2 as voxcpm2
 
