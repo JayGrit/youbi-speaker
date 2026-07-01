@@ -79,7 +79,7 @@ Write-Host "Device: $env:DEVICE"
 Write-Host "Model: $VoxCpmModelDir"
 Write-Host "FFmpeg: $env:FFMPEG_BINARY"
 Write-Host "SpeechBrain speaker model: $env:SPEECHBRAIN_SPEAKER_MODEL_DIR"
-Write-Host "Auto update: git pull every 60 seconds"
+Write-Host "Auto update: origin/main wins every 60 seconds"
 if ($env:FFPROBE_BINARY) {
   Write-Host "FFprobe: $env:FFPROBE_BINARY"
 }
@@ -137,6 +137,22 @@ function Get-GitHead {
   }
 }
 
+function Reset-RepositoryToRemote {
+  param(
+    [string]$RemoteHead,
+    [string]$Reason
+  )
+
+  Write-Warning "$Reason; resetting tracked files to origin/main."
+  & git -C $Root reset --hard $RemoteHead
+  if ($LASTEXITCODE -ne 0) {
+    Write-Warning "git reset --hard origin/main failed; keeping current process running."
+    return $false
+  }
+
+  return ((Get-GitHead) -eq $RemoteHead)
+}
+
 function Update-Repository {
   $LocalHead = Get-GitHead
   if (-not $LocalHead) {
@@ -164,15 +180,13 @@ function Update-Repository {
 
   & git -C $Root merge-base --is-ancestor $LocalHead $RemoteHead
   if ($LASTEXITCODE -ne 0) {
-    Write-Warning "Local HEAD and origin/main have diverged; automatic update skipped."
-    return $false
+    return Reset-RepositoryToRemote $RemoteHead "Local HEAD and origin/main have diverged"
   }
 
   Write-Host "New origin/main version found: $($RemoteHead.Substring(0, 7))"
   & git -C $Root merge --ff-only $RemoteHead
   if ($LASTEXITCODE -ne 0) {
-    Write-Warning "Fast-forward update failed; keeping current process running."
-    return $false
+    return Reset-RepositoryToRemote $RemoteHead "Fast-forward update failed"
   }
 
   return ((Get-GitHead) -eq $RemoteHead)
