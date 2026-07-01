@@ -10,5 +10,6 @@ data/
 data.zip
 workfolder/
 wheels/
+ffmpeg/
 *.log
 *.egg-info/
