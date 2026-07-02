@@ -1100,7 +1100,7 @@ def list_reference_segments(task_id: str) -> list[dict[str, Any]]:
             cur.execute(
                 """
                 SELECT task_id, item_index, text AS src_text, start_time, end_time, speaker
-                FROM asr_segment
+                FROM whisper_asr_segment
                 WHERE task_id = %s
                 ORDER BY item_index ASC
                 """,
