@@ -599,7 +599,6 @@ def initialize_ready_speaker_task() -> tuple[str, int] | None:
             """
             SELECT sp.task_id, sp.sub_stage, vi.task_type
             FROM distributor_task_stages sp
-            JOIN task t ON t.id = sp.task_id
             JOIN video_info vi ON vi.task_id = sp.task_id
             LEFT JOIN distributor_task_stages tr ON tr.task_id = sp.task_id AND tr.stage_name = 'translator' AND tr.sub_stage = 'main'
             WHERE sp.stage_name = 'speaker'
@@ -626,7 +625,6 @@ def initialize_ready_speaker_task() -> tuple[str, int] | None:
                   AND tr.status = %s
                 )
               )
-              AND t.status <> 'failed'
               AND NOT EXISTS (
                 SELECT 1
                 FROM speaker_segment seg
@@ -738,7 +736,7 @@ def initialize_ready_speaker_task() -> tuple[str, int] | None:
 def get_task(task_id: str) -> dict[str, Any] | None:
     with connect() as conn:
         cur = _dict_cursor(conn)
-        cur.execute("SELECT * FROM task WHERE id = %s", (task_id,))
+        cur.execute("SELECT task_id AS id FROM video_info WHERE task_id = %s", (task_id,))
         task = cur.fetchone()
         if not task:
             return None
@@ -754,10 +752,8 @@ def find_ready(stage_name: str) -> dict[str, Any] | None:
             f"""
             SELECT s.*
             FROM {table} s
-            JOIN task t ON t.id = s.task_id
             WHERE s.stage_name = %s
               AND s.status = %s
-              AND t.status <> 'failed'
             ORDER BY s.task_id ASC
             LIMIT 1
             """,
@@ -786,7 +782,6 @@ def find_ready_speaker_segment() -> dict[str, Any] | None:
                    ELSE %s
                  END
             LEFT JOIN distributor_task_stages tr ON tr.task_id = seg.task_id AND tr.stage_name = 'translator' AND tr.sub_stage = 'main'
-            JOIN task t ON t.id = seg.task_id
             WHERE seg.status = %s
               AND sp.status IN (%s, %s)
               AND (
@@ -794,7 +789,6 @@ def find_ready_speaker_segment() -> dict[str, Any] | None:
                 OR (sp.sub_stage = %s AND vi.task_type IN (%s, %s) AND tr.status = %s)
                 OR (sp.sub_stage = %s AND vi.task_type <> 'narration' AND vi.task_type NOT IN (%s, %s) AND tr.status = %s)
               )
-              AND t.status <> 'failed'
             ORDER BY seg.task_id ASC, seg.item_index ASC
             LIMIT {READY_SPEAKER_SEGMENT_CANDIDATE_LIMIT}
             """,
@@ -842,7 +836,6 @@ def find_ready_speaker_segment() -> dict[str, Any] | None:
                    ELSE %s
                  END
             LEFT JOIN distributor_task_stages tr ON tr.task_id = seg.task_id AND tr.stage_name = 'translator' AND tr.sub_stage = 'main'
-            JOIN task t ON t.id = seg.task_id
             JOIN (
                 SELECT seg_stats.task_id,
                        COUNT(*) AS total_segments,
@@ -889,7 +882,6 @@ def find_ready_speaker_segment() -> dict[str, Any] | None:
                 OR (sp.sub_stage = %s AND vi.task_type IN (%s, %s) AND tr.status = %s)
                 OR (sp.sub_stage = %s AND vi.task_type <> 'narration' AND vi.task_type NOT IN (%s, %s) AND tr.status = %s)
               )
-              AND t.status <> 'failed'
             ORDER BY
               CASE WHEN tr.status = %s THEN 0 ELSE 1 END,
               CASE WHEN COALESCE(account_priority.has_cooldown_capacity, 0) = 1 THEN 0 ELSE 1 END,
@@ -942,7 +934,6 @@ def claim_speaker_segment(segment_id: int) -> dict[str, Any] | None:
         cur.execute(
             """
             UPDATE speaker_segment seg
-            JOIN task t ON t.id = seg.task_id
             JOIN video_info vi ON vi.task_id = seg.task_id
             JOIN distributor_task_stages sp
               ON sp.task_id = seg.task_id
@@ -966,7 +957,6 @@ def claim_speaker_segment(segment_id: int) -> dict[str, Any] | None:
                 OR (sp.sub_stage = %s AND vi.task_type IN (%s, %s) AND tr.status = %s)
                 OR (sp.sub_stage = %s AND vi.task_type <> 'narration' AND vi.task_type NOT IN (%s, %s) AND tr.status = %s)
               )
-              AND t.status <> 'failed'
             """,
             (
                 SPEAKER_NARRATION_SUB_STAGE,
@@ -1022,16 +1012,6 @@ def claim_speaker_segment(segment_id: int) -> dict[str, Any] | None:
                 WHERE task_id = %s AND stage_name = 'speaker' AND sub_stage = %s AND status = %s
                 """,
                 (RUNNING, operator, row["task_id"], row["speaker_sub_stage"], READY),
-            )
-            cur.execute(
-                """
-                UPDATE task
-                SET status = 'running',
-                    current_stage = 'speaker',
-                    started_at = COALESCE(started_at, NOW())
-                WHERE id = %s
-                """,
-                (row["task_id"],),
             )
         conn.commit()
         return video_info.merge_into(row)
@@ -1269,10 +1249,8 @@ def recycle_stale_speaker_segments() -> tuple[int, list[str]]:
                    WHEN vi.task_type IN (%s, %s) THEN %s
                    ELSE %s
                  END
-            JOIN task t ON t.id = seg.task_id
             WHERE seg.status = %s
               AND sp.status IN (%s, %s, %s)
-              AND (t.status <> 'failed' OR t.current_stage = 'speaker')
               AND (
                   seg.error_message IS NULL
                   OR seg.error_message NOT LIKE 'translator api task failed:%%'
@@ -1303,7 +1281,6 @@ def recycle_stale_speaker_segments() -> tuple[int, list[str]]:
                    WHEN vi.task_type IN (%s, %s) THEN %s
                    ELSE %s
                  END
-            JOIN task t ON t.id = seg.task_id
             SET seg.status = %s,
                 seg.attempt_count = 0,
                 seg.error_message = %s,
@@ -1312,7 +1289,6 @@ def recycle_stale_speaker_segments() -> tuple[int, list[str]]:
                 seg.`operator` = NULL
             WHERE seg.status = %s
               AND sp.status IN (%s, %s, %s)
-              AND (t.status <> 'failed' OR t.current_stage = 'speaker')
               AND (
                   seg.error_message IS NULL
                   OR seg.error_message NOT LIKE 'translator api task failed:%%'
@@ -1337,14 +1313,9 @@ def recycle_stale_speaker_segments() -> tuple[int, list[str]]:
             cur.execute(
                 f"""
                 UPDATE distributor_task_stages sp
-                JOIN task t ON t.id = sp.task_id
                 SET sp.status = %s,
                     sp.completed_at = NULL,
-                    sp.error_message = NULL,
-                    t.status = 'running',
-                    t.current_stage = 'speaker',
-                    t.completed_at = NULL,
-                    t.error_message = NULL
+                    sp.error_message = NULL
                 WHERE sp.task_id IN ({placeholders})
                   AND sp.stage_name = 'speaker'
                   AND sp.sub_stage = CASE
@@ -1359,7 +1330,6 @@ def recycle_stale_speaker_segments() -> tuple[int, list[str]]:
                         ELSE %s
                       END
                   AND sp.status = %s
-                  AND t.current_stage = 'speaker'
                 """,
                 (
                     RUNNING,
@@ -1399,7 +1369,6 @@ def find_finalizable_speaker_task(task_id: str | None = None) -> dict[str, Any] 
             f"""
             SELECT sp.*
             FROM distributor_task_stages sp
-            JOIN task t ON t.id = sp.task_id
             JOIN video_info vi ON vi.task_id = sp.task_id
             LEFT JOIN distributor_task_stages tr ON tr.task_id = sp.task_id AND tr.stage_name = 'translator' AND tr.sub_stage = 'main'
             WHERE sp.stage_name = %s
@@ -1409,7 +1378,6 @@ def find_finalizable_speaker_task(task_id: str | None = None) -> dict[str, Any] 
                 OR (sp.sub_stage = %s AND vi.task_type IN (%s, %s) AND tr.status = %s)
                 OR (sp.sub_stage = %s AND vi.task_type <> 'narration' AND vi.task_type NOT IN (%s, %s) AND tr.status = %s)
               )
-              AND t.status <> 'failed'
               {task_filter}
               AND EXISTS (
                 SELECT 1 FROM speaker_segment seg
@@ -1465,7 +1433,6 @@ def find_terminal_failed_speaker_task(task_id: str | None = None) -> dict[str, A
                        'one or more speaker segments failed'
                    ) AS error_message
             FROM distributor_task_stages sp
-            JOIN task t ON t.id = sp.task_id
             JOIN video_info vi ON vi.task_id = sp.task_id
             WHERE sp.stage_name = %s
               AND sp.status IN (%s, %s)
@@ -1474,7 +1441,6 @@ def find_terminal_failed_speaker_task(task_id: str | None = None) -> dict[str, A
                 OR (sp.sub_stage = %s AND vi.task_type IN (%s, %s))
                 OR (sp.sub_stage = %s AND vi.task_type <> 'narration' AND vi.task_type NOT IN (%s, %s))
               )
-              AND t.status <> 'failed'
               {task_filter}
               AND EXISTS (
                 SELECT 1 FROM speaker_segment seg
@@ -1543,17 +1509,6 @@ def mark_running(
             (RUNNING, operator, task_id, stage_name, sub_stage, READY),
         )
         stage_updated = cur.rowcount == 1
-        if stage_updated:
-            cur.execute(
-                """
-                UPDATE task
-                SET status = 'running',
-                    current_stage = %s,
-                    started_at = COALESCE(started_at, NOW())
-                WHERE id = %s
-                """,
-                (stage_name, task_id),
-            )
         conn.commit()
         return stage_updated
 
@@ -1606,13 +1561,6 @@ def mark_success(
 
     with connect() as conn:
         cur = conn.cursor()
-        cur.execute("SELECT status FROM task WHERE id = %s", (task_id,))
-        task_row = cur.fetchone()
-        if not task_row:
-            conn.commit()
-            return
-        # Another stage may fail while this stage is still running. Preserve
-        # the task failure, but persist this stage's result and outputs.
         video_info.upsert(task_id, fields, cur)
         cur.execute(
             f"UPDATE {table} SET {', '.join(assignments)} WHERE task_id = %s AND stage_name = %s AND sub_stage = %s",
@@ -1630,9 +1578,6 @@ def mark_failed(
     table = _service_table_for(stage_name)
     with connect() as conn:
         cur = conn.cursor()
-        cur.execute("SELECT status FROM task WHERE id = %s FOR UPDATE", (task_id,))
-        task_row = cur.fetchone()
-        old_task_status = _row_value(task_row) if task_row else None
         cur.execute(
             f"""
             UPDATE {table}
@@ -1641,13 +1586,4 @@ def mark_failed(
             """,
             (FAILED, message, task_id, stage_name, sub_stage),
         )
-        cur.execute(
-            """
-            UPDATE task
-            SET status = 'failed', current_stage = %s, error_message = %s, completed_at = NOW()
-            WHERE id = %s
-            """,
-            (stage_name, message, task_id),
-        )
-        _apply_staged_pipeline_failure_cur(cur, task_id, old_task_status)
         conn.commit()
