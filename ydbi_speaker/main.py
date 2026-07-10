@@ -270,6 +270,37 @@ def publish_segment_outputs(task_id: str, reference: Path, output: Path) -> tupl
     return "", reference_url, "", output_url
 
 
+def process_blessing_task(row: dict) -> None:
+    task_id = str(row["task_id"])
+    text = sanitize_target_text(row.get("tts_text"))
+    if not text:
+        raise ValueError(f"product_blessing.tts_text is empty for task: {task_id}")
+    reference_url = db.blessing_reference_voice_url()
+    if not reference_url:
+        raise FileNotFoundError(
+            "blessing reference voice is missing; configure BLESSING_REFERENCE_VOICE_URL "
+            f"or asseter_static.remark={db.BLESSING_REFERENCE_VOICE_REMARK!r}"
+        )
+    session = storage.task_work_dir(task_id)
+    reference = storage.download(reference_url, session / "input" / "blessing-reference.wav")
+    output = generate_tts_segment(
+        text,
+        0,
+        reference,
+        reference,
+        session,
+        progress_label=f"{task_id}:blessing",
+    )
+    output_url = storage.upload(
+        output,
+        f"{task_id}/speaker/blessing/{output.name}",
+        "audio/wav",
+    )
+    db.mark_blessing_success(task_id, output_url)
+    shutil.rmtree(storage.task_work_path(task_id), ignore_errors=True)
+    log.info("speaker blessing task=%s succeeded audio=%s", task_id, output_url)
+
+
 def finalize_task(row: dict) -> None:
     task_id = row["task_id"]
     sub_stage = str(row.get("sub_stage") or row.get("speaker_sub_stage") or db.SPEAKER_MAIN_SUB_STAGE)
@@ -335,6 +366,15 @@ def run_segment_worker() -> None:
             finalizable = db.find_finalizable_speaker_task()
             if finalizable:
                 finalize_task(finalizable)
+                continue
+
+            blessing = db.claim_ready_blessing_task()
+            if blessing:
+                try:
+                    process_blessing_task(blessing)
+                except Exception as exc:
+                    log.exception("speaker blessing failed task=%s", blessing.get("task_id"))
+                    db.mark_blessing_failed(str(blessing.get("task_id")), str(exc))
                 continue
 
             failed = db.find_terminal_failed_speaker_task()

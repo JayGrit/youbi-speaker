@@ -23,6 +23,8 @@ UPLOAD_SUBMISSION_TABLES = (
 )
 HEARTBEAT_DEVICE_COLUMNS = ("Macbook Air M4", "Macmini M2", "LPXB", "MY_HP", "LPXB_HP", "TXY")
 PRODUCT_NARRATION_SENTENCE_TABLE = "product_narration_sentence"
+PRODUCT_BLESSING_TABLE = "product_blessing"
+ASSETS_TABLE = "asseter_static"
 MAX_NARRATION_SEGMENT_CHARS = 500
 OPERATOR_COLUMN = "operator"
 OPERATOR_COLUMN_DEFINITION = "VARCHAR(128) NULL"
@@ -151,6 +153,8 @@ SPEAKER_SEGMENT_EXTRA_COLUMNS = {
 SPEAKER_MAIN_SUB_STAGE = "main"
 SPEAKER_NARRATION_SUB_STAGE = "narration"
 SPEAKER_DUBBING_MULTI_SEGMENT_SUB_STAGE = "dubbing_multi_segment"
+SPEAKER_BLESSING_SUB_STAGE = "blessing"
+BLESSING_REFERENCE_VOICE_REMARK = "blessing_reference_voice_20260709"
 TASK_TYPE_DUBBING_MULTI_SEGMENT = "dubbing_multi_segment"
 TASK_TYPE_DUBBING_CHUNK_ALIGNED = "dubbing_chunk_aligned"
 CHUNK_SPEAKER_TASK_TYPES = (
@@ -336,6 +340,36 @@ def ensure_speaker_segment_schema() -> None:
                 ON UPDATE CASCADE ON DELETE CASCADE
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
             """
+        )
+        cur.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {PRODUCT_BLESSING_TABLE} (
+              id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+              task_id VARCHAR(64) NULL,
+              tts_text TEXT NULL,
+              background_music_url TEXT NULL,
+              status VARCHAR(32) NOT NULL DEFAULT 'ready',
+              error_message TEXT NULL,
+              started_at DATETIME NULL,
+              completed_at DATETIME NULL,
+              `operator` VARCHAR(128) NULL,
+              created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+              UNIQUE KEY uk_product_blessing_task_id (task_id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+            """
+        )
+        _ensure_columns(
+            cur,
+            PRODUCT_BLESSING_TABLE,
+            {
+                "tts_text": "TEXT NULL",
+                "background_music_url": "TEXT NULL",
+                "error_message": "TEXT NULL",
+                "started_at": "DATETIME NULL",
+                "completed_at": "DATETIME NULL",
+                OPERATOR_COLUMN: OPERATOR_COLUMN_DEFINITION,
+            },
         )
         _ensure_index_cur(
             cur,
@@ -733,6 +767,115 @@ def initialize_ready_speaker_task() -> tuple[str, int] | None:
         inserted = int(cur.rowcount)
         conn.commit()
         return task_id, inserted
+
+
+def claim_ready_blessing_task() -> dict[str, Any] | None:
+    ensure_speaker_segment_schema()
+    operator = _operator_value()
+    with connect() as conn:
+        conn.start_transaction()
+        cur = _dict_cursor(conn)
+        cur.execute(
+            f"""
+            SELECT sp.task_id, pb.tts_text
+            FROM distributor_task_stages sp
+            JOIN video_info vi ON vi.task_id = sp.task_id
+            JOIN {PRODUCT_BLESSING_TABLE} pb ON pb.task_id = sp.task_id
+            WHERE sp.stage_name = 'speaker'
+              AND sp.sub_stage = %s
+              AND sp.status = %s
+              AND vi.task_type = 'blessing'
+              AND NULLIF(TRIM(COALESCE(pb.tts_text, '')), '') IS NOT NULL
+            ORDER BY sp.task_id ASC
+            LIMIT 1
+            FOR UPDATE
+            """,
+            (SPEAKER_BLESSING_SUB_STAGE, READY),
+        )
+        row = cur.fetchone()
+        if not row:
+            conn.commit()
+            return None
+        task_id = str(row["task_id"])
+        cur = conn.cursor()
+        cur.execute(
+            f"""
+            UPDATE {SERVICE_TABLE}
+            SET status = %s,
+                started_at = COALESCE(started_at, NOW()),
+                error_message = NULL,
+                `operator` = %s
+            WHERE task_id = %s
+              AND stage_name = 'speaker'
+              AND sub_stage = %s
+              AND status = %s
+            """,
+            (RUNNING, operator, task_id, SPEAKER_BLESSING_SUB_STAGE, READY),
+        )
+        if cur.rowcount != 1:
+            conn.rollback()
+            return None
+        conn.commit()
+        return {"task_id": task_id, "tts_text": str(row.get("tts_text") or "")}
+
+
+def blessing_reference_voice_url() -> str:
+    configured = os.environ.get("BLESSING_REFERENCE_VOICE_URL", "").strip()
+    if configured:
+        return configured
+    with connect() as conn:
+        cur = conn.cursor()
+        if not _staged_table_exists_cur(cur, ASSETS_TABLE):
+            return ""
+        cur.execute(
+            f"""
+            SELECT content
+            FROM {ASSETS_TABLE}
+            WHERE type = 'voice'
+              AND remark = %s
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (BLESSING_REFERENCE_VOICE_REMARK,),
+        )
+        row = cur.fetchone()
+        return str(_row_value(row) or "").strip() if row else ""
+
+
+def mark_blessing_success(task_id: str, audio_url: str) -> None:
+    operator = _operator_value()
+    with connect() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            f"""
+            UPDATE {PRODUCT_BLESSING_TABLE}
+            SET background_music_url = %s,
+                error_message = NULL,
+                `operator` = %s
+            WHERE task_id = %s
+            """,
+            (audio_url, operator, task_id),
+        )
+        conn.commit()
+    mark_success(SERVICE_NAME, task_id, {"tts_segments_dir": audio_url}, SPEAKER_BLESSING_SUB_STAGE)
+
+
+def mark_blessing_failed(task_id: str, message: str) -> None:
+    with connect() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            f"""
+            UPDATE {PRODUCT_BLESSING_TABLE}
+            SET error_message = %s,
+                `operator` = %s
+            WHERE task_id = %s
+            """,
+            (message, _operator_value(), task_id),
+        )
+        conn.commit()
+    mark_failed(SERVICE_NAME, task_id, message, SPEAKER_BLESSING_SUB_STAGE)
+
+
 def get_task(task_id: str) -> dict[str, Any] | None:
     with connect() as conn:
         cur = _dict_cursor(conn)
