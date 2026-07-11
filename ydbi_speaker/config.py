@@ -62,7 +62,7 @@ SEGMENT_RUNNING_TIMEOUT_SECONDS = 3 * 60
 NARRATION_SEGMENT_RUNNING_TIMEOUT_SECONDS = 20 * 60
 NARRATION_REFERENCE_AUDIO_URL = os.getenv(
     "NARRATION_REFERENCE_AUDIO_URL",
-    "http://120.53.92.66:9000/ydbi/assets/voice/history-story-deep-male.wav",
+    "http://120.53.92.66:9000/youbi-assets/assets/voice/history-story-deep-male.wav",
 )
 
 VOXCPM_MODEL = "OpenBMB/VoxCPM2"
