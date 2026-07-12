@@ -924,11 +924,11 @@ def find_ready_speaker_segment() -> dict[str, Any] | None:
     video_info.ensure_schema()
     with connect() as conn:
         cur = _dict_cursor(conn)
-        _ensure_staged_account_columns_cur(cur)
         cur.execute(
             f"""
             SELECT seg.id, seg.task_id, seg.item_index
             FROM speaker_segment seg FORCE INDEX (idx_speaker_segment_status_task_item)
+            JOIN task t ON t.id = seg.task_id
             JOIN video_info vi ON vi.task_id = seg.task_id
             JOIN distributor_task_stages sp
               ON sp.task_id = seg.task_id
@@ -938,15 +938,9 @@ def find_ready_speaker_segment() -> dict[str, Any] | None:
                    WHEN vi.task_type IN (%s, %s) THEN %s
                    ELSE %s
                  END
-            LEFT JOIN distributor_task_stages tr ON tr.task_id = seg.task_id AND tr.stage_name = 'translator' AND tr.sub_stage = 'main'
             WHERE seg.status = %s
               AND sp.status IN (%s, %s)
-              AND (
-                (sp.sub_stage = %s AND vi.task_type = 'narration')
-                OR (sp.sub_stage = %s AND vi.task_type IN (%s, %s) AND tr.status = %s)
-                OR (sp.sub_stage = %s AND vi.task_type <> 'narration' AND vi.task_type NOT IN (%s, %s) AND tr.status = %s)
-              )
-            ORDER BY seg.task_id ASC, seg.item_index ASC
+            ORDER BY COALESCE(t.priority, 1) DESC, seg.task_id ASC, seg.item_index ASC
             LIMIT {READY_SPEAKER_SEGMENT_CANDIDATE_LIMIT}
             """,
             (
@@ -957,13 +951,6 @@ def find_ready_speaker_segment() -> dict[str, Any] | None:
                 SEGMENT_READY,
                 READY,
                 RUNNING,
-                SPEAKER_NARRATION_SUB_STAGE,
-                SPEAKER_DUBBING_MULTI_SEGMENT_SUB_STAGE,
-                *CHUNK_SPEAKER_TASK_TYPES,
-                SUCCESS,
-                SPEAKER_MAIN_SUB_STAGE,
-                *CHUNK_SPEAKER_TASK_TYPES,
-                SUCCESS,
             ),
         )
         candidate_rows = cur.fetchall()
@@ -978,11 +965,13 @@ def find_ready_speaker_segment() -> dict[str, Any] | None:
         cur.execute(
             f"""
             SELECT seg.*,
+                   COALESCE(t.priority, 1) AS task_priority,
                    vi.task_type AS task_type,
                    sp.sub_stage AS speaker_sub_stage,
                    vi.audio_vocals_path AS speaker_audio_vocals_path,
                    vi.translation_json_path AS translation_json_path
             FROM speaker_segment seg
+            JOIN task t ON t.id = seg.task_id
             JOIN video_info vi ON vi.task_id = seg.task_id
             JOIN distributor_task_stages sp
               ON sp.task_id = seg.task_id
@@ -992,7 +981,6 @@ def find_ready_speaker_segment() -> dict[str, Any] | None:
                    WHEN vi.task_type IN (%s, %s) THEN %s
                    ELSE %s
                  END
-            LEFT JOIN distributor_task_stages tr ON tr.task_id = seg.task_id AND tr.stage_name = 'translator' AND tr.sub_stage = 'main'
             JOIN (
                 SELECT seg_stats.task_id,
                        COUNT(*) AS total_segments,
@@ -1001,48 +989,11 @@ def find_ready_speaker_segment() -> dict[str, Any] | None:
                 WHERE seg_stats.task_id IN ({task_placeholders})
                 GROUP BY seg_stats.task_id
             ) stats ON stats.task_id = seg.task_id
-            LEFT JOIN (
-                SELECT submission.task_id,
-                       MAX(
-                           CASE
-                             WHEN COALESCE(upload_capacity.active_count, 0) < account.downloader_max_staged_count
-                             THEN 1
-                             ELSE 0
-                           END
-                       ) AS has_cooldown_capacity,
-                       MIN(
-                           CASE
-                             WHEN COALESCE(upload_capacity.active_count, 0) < account.downloader_max_staged_count
-                             THEN COALESCE(upload_capacity.active_count, 0)
-                             ELSE NULL
-                           END
-                       ) AS min_available_cooldown
-                FROM downloader_submission submission FORCE INDEX (idx_downloader_submission_status_type_task)
-                JOIN uploader_account account ON account.account_key = submission.type
-                LEFT JOIN (
-                    SELECT upload_submission.account_key,
-                           COUNT(*) AS active_count
-                    FROM uploader_task upload_submission
-                    WHERE upload_submission.status IN (%s, %s)
-                    GROUP BY upload_submission.account_key
-                ) upload_capacity ON upload_capacity.account_key = account.account_key
-                WHERE submission.status = %s
-                  AND NULLIF(submission.type, '') IS NOT NULL
-                  AND submission.task_id IN ({task_placeholders})
-                GROUP BY submission.task_id
-            ) account_priority ON account_priority.task_id = seg.task_id
             WHERE sp.status IN (%s, %s)
               AND seg.status = %s
               AND seg.id IN ({segment_placeholders})
-              AND (
-                (sp.sub_stage = %s AND vi.task_type = 'narration')
-                OR (sp.sub_stage = %s AND vi.task_type IN (%s, %s) AND tr.status = %s)
-                OR (sp.sub_stage = %s AND vi.task_type <> 'narration' AND vi.task_type NOT IN (%s, %s) AND tr.status = %s)
-              )
             ORDER BY
-              CASE WHEN tr.status = %s THEN 0 ELSE 1 END,
-              CASE WHEN COALESCE(account_priority.has_cooldown_capacity, 0) = 1 THEN 0 ELSE 1 END,
-              account_priority.min_available_cooldown ASC,
+              COALESCE(t.priority, 1) DESC,
               CASE WHEN sp.status = %s THEN 0 ELSE 1 END,
               CASE
                 WHEN sp.status = %s THEN stats.remaining_segments
@@ -1061,20 +1012,8 @@ def find_ready_speaker_segment() -> dict[str, Any] | None:
                 *candidate_task_ids,
                 READY,
                 RUNNING,
-                SUCCESS,
-                *candidate_task_ids,
-                READY,
-                RUNNING,
                 SEGMENT_READY,
                 *candidate_segment_ids,
-                SPEAKER_NARRATION_SUB_STAGE,
-                SPEAKER_DUBBING_MULTI_SEGMENT_SUB_STAGE,
-                *CHUNK_SPEAKER_TASK_TYPES,
-                SUCCESS,
-                SPEAKER_MAIN_SUB_STAGE,
-                *CHUNK_SPEAKER_TASK_TYPES,
-                SUCCESS,
-                SUCCESS,
                 RUNNING,
                 RUNNING,
             ),
@@ -1100,7 +1039,6 @@ def claim_speaker_segment(segment_id: int) -> dict[str, Any] | None:
                    WHEN vi.task_type IN (%s, %s) THEN %s
                    ELSE %s
                  END
-            LEFT JOIN distributor_task_stages tr ON tr.task_id = seg.task_id AND tr.stage_name = 'translator' AND tr.sub_stage = 'main'
             SET seg.status = %s,
                 seg.attempt_count = seg.attempt_count + 1,
                 seg.started_at = COALESCE(seg.started_at, NOW()),
@@ -1109,11 +1047,6 @@ def claim_speaker_segment(segment_id: int) -> dict[str, Any] | None:
             WHERE seg.id = %s
               AND seg.status = %s
               AND sp.status IN (%s, %s)
-              AND (
-                (sp.sub_stage = %s AND vi.task_type = 'narration')
-                OR (sp.sub_stage = %s AND vi.task_type IN (%s, %s) AND tr.status = %s)
-                OR (sp.sub_stage = %s AND vi.task_type <> 'narration' AND vi.task_type NOT IN (%s, %s) AND tr.status = %s)
-              )
             """,
             (
                 SPEAKER_NARRATION_SUB_STAGE,
@@ -1126,13 +1059,6 @@ def claim_speaker_segment(segment_id: int) -> dict[str, Any] | None:
                 SEGMENT_READY,
                 READY,
                 RUNNING,
-                SPEAKER_NARRATION_SUB_STAGE,
-                SPEAKER_DUBBING_MULTI_SEGMENT_SUB_STAGE,
-                *CHUNK_SPEAKER_TASK_TYPES,
-                SUCCESS,
-                SPEAKER_MAIN_SUB_STAGE,
-                *CHUNK_SPEAKER_TASK_TYPES,
-                SUCCESS,
             ),
         )
         if cur.rowcount != 1:

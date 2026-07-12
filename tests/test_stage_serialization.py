@@ -213,22 +213,25 @@ class StageSerializationTest(unittest.TestCase):
         self.assertIn("FROM `translator-chunk` tc", cursor.sql)
         self.assertEqual((db.SEGMENT_READY, "task-multi"), cursor.params)
 
-    def test_ready_segment_query_requires_translator_success(self) -> None:
+    def test_ready_segment_query_uses_task_priority_without_translator_gate(self) -> None:
         cursor = FakeCursor()
         with (
             patch.object(db, "connect", return_value=FakeConnection(cursor)),
             patch.object(db, "ensure_speaker_segment_schema"),
             patch.object(db.video_info, "ensure_schema"),
             patch.object(db.video_info, "merge_into", side_effect=lambda row: row),
-            patch.object(db, "_ensure_staged_account_columns_cur"),
         ):
             self.assertIsNone(db.find_ready_speaker_segment())
 
-        self.assertIn("sp.sub_stage = %s AND vi.task_type IN (%s, %s) AND tr.status = %s", cursor.sql)
-        self.assertIn("sp.sub_stage = %s AND vi.task_type <> 'narration' AND vi.task_type NOT IN (%s, %s)", cursor.sql)
+        self.assertIn("JOIN task t ON t.id = seg.task_id", cursor.sql)
+        self.assertIn("ORDER BY COALESCE(t.priority, 1) DESC, seg.task_id ASC, seg.item_index ASC", cursor.sql)
+        self.assertNotIn("translator", cursor.sql)
+        self.assertNotIn("tr.status", cursor.sql)
+        self.assertNotIn("uploader_account", cursor.sql)
+        self.assertNotIn("uploader_task", cursor.sql)
+        self.assertNotIn("downloader_submission", cursor.sql)
         self.assertNotIn("WITH candidate_segments AS", cursor.sql)
         self.assertNotIn("JOIN candidate_tasks candidate_task", cursor.sql)
-        self.assertIn(db.SUCCESS, cursor.params)
 
     def test_ready_segment_query_targets_narration_sub_stage(self) -> None:
         cursor = FakeCursor()
@@ -243,9 +246,45 @@ class StageSerializationTest(unittest.TestCase):
 
         self.assertIn("WHEN vi.task_type = 'narration' THEN %s", cursor.sql)
         self.assertIn("WHEN vi.task_type IN (%s, %s) THEN %s", cursor.sql)
-        self.assertIn("sp.sub_stage = %s AND vi.task_type = 'narration'", cursor.sql)
         self.assertEqual(db.SPEAKER_NARRATION_SUB_STAGE, cursor.params[0])
-        self.assertEqual(db.SPEAKER_NARRATION_SUB_STAGE, cursor.params[8])
+        self.assertEqual(db.SEGMENT_READY, cursor.params[5])
+
+    def test_ready_segment_final_sort_uses_task_priority_and_segment_counts(self) -> None:
+        class CandidateCursor(FakeCursor):
+            def __init__(self) -> None:
+                super().__init__()
+                self.calls = []
+
+            def execute(self, sql, params=()) -> None:
+                super().execute(sql, params)
+                self.calls.append((sql, params))
+
+            def fetchall(self):
+                return [{"id": 12, "task_id": "low"}, {"id": 8, "task_id": "high"}]
+
+        cursor = CandidateCursor()
+        with (
+            patch.object(db, "connect", return_value=FakeConnection(cursor)),
+            patch.object(db, "ensure_speaker_segment_schema"),
+            patch.object(db.video_info, "ensure_schema"),
+            patch.object(db.video_info, "merge_into", side_effect=lambda row: row),
+        ):
+            self.assertIsNone(db.find_ready_speaker_segment())
+
+        first_sql, _ = cursor.calls[0]
+        final_sql, final_params = cursor.calls[1]
+        self.assertIn("ORDER BY COALESCE(t.priority, 1) DESC, seg.task_id ASC, seg.item_index ASC", first_sql)
+        self.assertIn("COALESCE(t.priority, 1) AS task_priority", final_sql)
+        self.assertIn("COALESCE(t.priority, 1) DESC", final_sql)
+        self.assertIn("CASE WHEN sp.status = %s THEN 0 ELSE 1 END", final_sql)
+        self.assertIn("stats.remaining_segments", final_sql)
+        self.assertIn("stats.total_segments", final_sql)
+        self.assertNotIn("translator", final_sql)
+        self.assertNotIn("uploader_account", final_sql)
+        self.assertNotIn("uploader_task", final_sql)
+        self.assertNotIn("downloader_submission", final_sql)
+        self.assertIn("high", final_params)
+        self.assertIn("low", final_params)
 
     def test_claim_segment_filters_by_speaker_sub_stage(self) -> None:
         cursor = FakeCursor()
@@ -271,16 +310,10 @@ class StageSerializationTest(unittest.TestCase):
                 db.SEGMENT_READY,
                 db.READY,
                 db.RUNNING,
-                db.SPEAKER_NARRATION_SUB_STAGE,
-                db.SPEAKER_DUBBING_MULTI_SEGMENT_SUB_STAGE,
-                *db.CHUNK_SPEAKER_TASK_TYPES,
-                db.SUCCESS,
-                db.SPEAKER_MAIN_SUB_STAGE,
-                *db.CHUNK_SPEAKER_TASK_TYPES,
-                db.SUCCESS,
             ),
             cursor.params,
         )
+        self.assertNotIn("translator", cursor.sql)
 
     def test_mark_segment_success_records_current_operator(self) -> None:
         cursor = FakeCursor()
