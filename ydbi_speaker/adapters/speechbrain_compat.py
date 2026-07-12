@@ -14,27 +14,42 @@ def _stub_module(name: str) -> types.ModuleType:
     return module
 
 
-def suppress_optional_k2_lazy_import() -> None:
-    """Avoid importing SpeechBrain's optional k2 integration during stack inspection.
+def _is_speechbrain_lazy_module(module: object) -> bool:
+    module_type = type(module)
+    return module_type.__name__ == "LazyModule" and module_type.__module__ == "speechbrain.utils.importutils"
 
-    SpeechBrain can register ``speechbrain.integrations.k2_fsa`` as a LazyModule.
-    On Python 3.12, ``inspect.stack()`` may touch that object while librosa imports
-    optional modules, which forces an unrelated k2 import and fails when k2 is not
-    installed. The speaker service does not use the k2 integration.
-    """
 
-    name = "speechbrain.integrations.k2_fsa"
-    module = sys.modules.get(name)
-    if module is not None:
-        module_type = type(module)
-        if module_type.__name__ != "LazyModule" or module_type.__module__ != "speechbrain.utils.importutils":
-            return
-
+def _replace_lazy_module(name: str, module: object | None) -> None:
     stub = _stub_module(name)
     sys.modules[name] = stub
-    parent = sys.modules.get("speechbrain.integrations")
+    parent_name, _separator, attribute_name = name.rpartition(".")
+    parent = sys.modules.get(parent_name)
     if parent is None:
         return
-    if module is None or getattr(parent, "__dict__", {}).get("k2_fsa") is module:
+    if module is None or getattr(parent, "__dict__", {}).get(attribute_name) is module:
         with contextlib.suppress(Exception):
-            setattr(parent, "k2_fsa", stub)
+            setattr(parent, attribute_name, stub)
+
+
+def suppress_optional_k2_lazy_import() -> None:
+    """Avoid importing SpeechBrain's optional integrations during stack inspection.
+
+    SpeechBrain can register optional integrations as LazyModule objects.
+    On Python 3.12, ``inspect.stack()`` may touch that object while librosa imports
+    optional modules, which forces unrelated integrations to import and fail when
+    optional dependencies are not installed. The speaker service does not use
+    SpeechBrain integrations.
+    """
+
+    lazy_module_names = [
+        name
+        for name, module in list(sys.modules.items())
+        if name.startswith("speechbrain.integrations.") and _is_speechbrain_lazy_module(module)
+    ]
+    if "speechbrain.integrations.k2_fsa" not in lazy_module_names:
+        lazy_module_names.append("speechbrain.integrations.k2_fsa")
+
+    for name in lazy_module_names:
+        module = sys.modules.get(name)
+        if module is None or _is_speechbrain_lazy_module(module):
+            _replace_lazy_module(name, module)
