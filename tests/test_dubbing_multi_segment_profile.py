@@ -197,22 +197,16 @@ class DubbingMultiSegmentProfileTest(unittest.TestCase):
             selected = session / "selected.wav"
             selected.write_bytes(b"selected")
             created_profiles: list[VoiceProfile] = []
-            embedding_calls = 0
 
             def fake_load_existing(task_id: str, existing_session: Path) -> VoiceProfile | None:
                 self.assertEqual("task-concurrent", task_id)
                 self.assertEqual(session, existing_session)
                 return created_profiles[0] if created_profiles else None
 
-            def fake_embedding(_path: Path) -> np.ndarray:
-                nonlocal embedding_calls
-                embedding_calls += 1
-                time.sleep(0.02)
-                return np.array([1.0, 0.0], dtype=np.float32)
-
             def fake_upsert(**kwargs) -> None:
                 if kwargs["status"] != "ready" or created_profiles:
                     return
+                time.sleep(0.02)
                 created_profiles.append(
                     VoiceProfile(
                         task_id=kwargs["task_id"],
@@ -239,7 +233,6 @@ class DubbingMultiSegmentProfileTest(unittest.TestCase):
                 patch.object(voice_profile, "select_global_reference", return_value=(selected, [{"item_index": 1, "score": 91.0}])),
                 patch.object(voice_profile.storage, "upload", side_effect=lambda _path, object_name, _content_type: f"http://minio/{object_name}"),
                 patch.object(voice_profile.storage, "upload_once", side_effect=lambda _path, object_name, _content_type: f"http://minio/{object_name}"),
-                patch.object(voice_profile, "embedding", side_effect=fake_embedding),
                 patch.object(voice_profile.db, "upsert_voice_profile", side_effect=fake_upsert),
             ):
                 with ThreadPoolExecutor(max_workers=3) as executor:
@@ -250,7 +243,6 @@ class DubbingMultiSegmentProfileTest(unittest.TestCase):
                         )
                     )
 
-        self.assertEqual(1, embedding_calls)
         self.assertEqual(1, len(created_profiles))
         self.assertTrue(all(profile.task_id == "task-concurrent" for profile in profiles))
 

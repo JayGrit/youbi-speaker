@@ -11,7 +11,6 @@ from typing import Any
 from ydbi_speaker import db, storage
 from ydbi_speaker.adapters.audio import split_audio_segments
 from ydbi_speaker.adapters.reference import select_global_reference
-from ydbi_speaker.adapters.speaker_embedding import embedding, save_embedding
 from ydbi_speaker.adapters.voxcpm import fallback_reference, generation_options
 from ydbi_speaker.config import SPEAKER_PROFILE_VERSION, SPEAKER_SIMILARITY_THRESHOLD
 
@@ -134,13 +133,7 @@ def _ensure_reference_embedding(profile: VoiceProfile, profile_dir: Path) -> Non
     object_name = reference_embedding_object(profile.task_id)
 
     if not embedding_path.exists() or embedding_path.stat().st_size == 0:
-        try:
-            storage.download(profile.reference_embedding_url, embedding_path, (object_name,))
-        except FileNotFoundError:
-            reference_embedding = embedding(profile.reference_wav)
-            temporary_path = embedding_path.with_suffix(".tmp.npy")
-            save_embedding(temporary_path, reference_embedding)
-            temporary_path.replace(embedding_path)
+        storage.download(profile.reference_embedding_url, embedding_path, (object_name,))
 
     storage.upload_once(embedding_path, object_name, "application/octet-stream")
     _upsert_profile(profile)
