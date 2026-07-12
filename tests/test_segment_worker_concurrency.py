@@ -12,6 +12,14 @@ from ydbi_speaker import main
 
 
 class SegmentWorkerConcurrencyTest(unittest.TestCase):
+    def test_collect_finished_segments_leaves_running_future_inflight(self) -> None:
+        future = Future()
+        claimed = {"id": 1, "task_id": "task-running", "item_index": 0}
+        inflight = {future: claimed}
+
+        self.assertEqual(0, main._collect_finished_segments(inflight))
+        self.assertEqual({future: claimed}, inflight)
+
     def test_claim_ready_segments_caps_inflight_at_requested_limit(self) -> None:
         rows = [{"id": index} for index in range(1, 5)]
         futures = [Future() for _ in range(3)]

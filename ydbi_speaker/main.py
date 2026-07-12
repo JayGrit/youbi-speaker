@@ -450,10 +450,11 @@ def run_segment_worker() -> None:
                     if cleaned:
                         log.info("speaker cleaned %d successful task work dir(s)", cleaned)
                     next_cleanup_at = now + _CLEANUP_INTERVAL_SECONDS
-                recycled, _exhausted_task_ids = db.recycle_stale_speaker_segments()
-                if recycled:
-                    log.warning("speaker recycled %d stale running/failed segment(s)", recycled)
-                    did_work = True
+                if not inflight:
+                    recycled, _exhausted_task_ids = db.recycle_stale_speaker_segments()
+                    if recycled:
+                        log.warning("speaker recycled %d stale running/failed segment(s)", recycled)
+                        did_work = True
                 initialized = db.initialize_ready_speaker_task()
                 if initialized:
                     task_id, segment_count = initialized
