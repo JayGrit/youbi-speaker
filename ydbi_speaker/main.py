@@ -423,8 +423,11 @@ def run_segment_worker() -> None:
                                 str(failed.get("sub_stage") or db.SPEAKER_MAIN_SUB_STAGE),
                             )
                 continue
-        except Exception:
-            log.exception("speaker failed to poll segment queue; retrying in %ss", POLL_INTERVAL_SECONDS)
+        except Exception as exc:
+            if db.is_mysql_connection_error(exc):
+                log.warning("speaker failed to poll segment queue: network connection failed; retrying in %ss", POLL_INTERVAL_SECONDS)
+            else:
+                log.exception("speaker failed to poll segment queue; retrying in %ss", POLL_INTERVAL_SECONDS)
         time.sleep(POLL_INTERVAL_SECONDS)
 
 
