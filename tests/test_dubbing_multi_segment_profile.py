@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import tempfile
+import time
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import patch
 
@@ -186,6 +188,71 @@ class DubbingMultiSegmentProfileTest(unittest.TestCase):
         self.assertIn("task-1/speaker/profile/dubbing_multi_segment/reference.wav", uploads)
         self.assertIn("task-1/speaker/profile/dubbing_multi_segment/profile.json", uploads)
         self.assertEqual("task-1", upserts[0]["task_id"])
+
+    def test_voice_profile_creation_is_serialized_per_task(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Path(tmp)
+            vocals = session / "vocals.wav"
+            vocals.write_bytes(b"vocals")
+            selected = session / "selected.wav"
+            selected.write_bytes(b"selected")
+            created_profiles: list[VoiceProfile] = []
+            embedding_calls = 0
+
+            def fake_load_existing(task_id: str, existing_session: Path) -> VoiceProfile | None:
+                self.assertEqual("task-concurrent", task_id)
+                self.assertEqual(session, existing_session)
+                return created_profiles[0] if created_profiles else None
+
+            def fake_embedding(_path: Path) -> np.ndarray:
+                nonlocal embedding_calls
+                embedding_calls += 1
+                time.sleep(0.02)
+                return np.array([1.0, 0.0], dtype=np.float32)
+
+            def fake_upsert(**kwargs) -> None:
+                if kwargs["status"] != "ready" or created_profiles:
+                    return
+                created_profiles.append(
+                    VoiceProfile(
+                        task_id=kwargs["task_id"],
+                        sub_stage=kwargs["sub_stage"],
+                        profile_version=kwargs["profile_version"],
+                        reference_item_index=kwargs["reference_item_index"],
+                        reference_text=kwargs["reference_text"],
+                        reference_wav=session / "profile" / db.SPEAKER_DUBBING_MULTI_SEGMENT_SUB_STAGE / "reference.wav",
+                        reference_wav_url=kwargs["reference_wav_url"],
+                        reference_embedding_url=kwargs["reference_embedding_url"],
+                        generation_options=kwargs["generation_options"],
+                        similarity_threshold=kwargs["similarity_threshold"],
+                    )
+                )
+
+            with (
+                patch.object(voice_profile, "_load_existing_profile", side_effect=fake_load_existing),
+                patch.object(voice_profile.storage, "download", side_effect=FileNotFoundError("missing")),
+                patch.object(voice_profile.db, "list_reference_segments", return_value=[]),
+                patch.object(voice_profile.db, "list_speaker_segments", return_value=[
+                    {"item_index": 1, "src_text": "chosen source", "start_time": 0, "end_time": 1000},
+                ]),
+                patch.object(voice_profile, "split_audio_segments", return_value={1: selected}),
+                patch.object(voice_profile, "select_global_reference", return_value=(selected, [{"item_index": 1, "score": 91.0}])),
+                patch.object(voice_profile.storage, "upload", side_effect=lambda _path, object_name, _content_type: f"http://minio/{object_name}"),
+                patch.object(voice_profile.storage, "upload_once", side_effect=lambda _path, object_name, _content_type: f"http://minio/{object_name}"),
+                patch.object(voice_profile, "embedding", side_effect=fake_embedding),
+                patch.object(voice_profile.db, "upsert_voice_profile", side_effect=fake_upsert),
+            ):
+                with ThreadPoolExecutor(max_workers=3) as executor:
+                    profiles = list(
+                        executor.map(
+                            lambda _index: voice_profile.get_or_create_profile("task-concurrent", vocals, session),
+                            range(3),
+                        )
+                    )
+
+        self.assertEqual(1, embedding_calls)
+        self.assertEqual(1, len(created_profiles))
+        self.assertTrue(all(profile.task_id == "task-concurrent" for profile in profiles))
 
     def test_similarity_success_upserts_segment_metrics(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

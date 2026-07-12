@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import shutil
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -15,6 +16,8 @@ from ydbi_speaker.adapters.voxcpm import fallback_reference, generation_options
 from ydbi_speaker.config import SPEAKER_PROFILE_VERSION, SPEAKER_SIMILARITY_THRESHOLD
 
 log = logging.getLogger(__name__)
+_PROFILE_LOCKS: dict[str, threading.Lock] = {}
+_PROFILE_LOCKS_GUARD = threading.Lock()
 
 
 @dataclass(frozen=True)
@@ -51,6 +54,15 @@ def _profile_dir(session: Path) -> Path:
     path = session / "profile" / db.SPEAKER_DUBBING_MULTI_SEGMENT_SUB_STAGE
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def _profile_lock(task_id: str) -> threading.Lock:
+    with _PROFILE_LOCKS_GUARD:
+        lock = _PROFILE_LOCKS.get(task_id)
+        if lock is None:
+            lock = threading.Lock()
+            _PROFILE_LOCKS[task_id] = lock
+        return lock
 
 
 def _profile_from_payload(task_id: str, payload: dict[str, Any], reference_wav: Path) -> VoiceProfile:
@@ -126,7 +138,9 @@ def _ensure_reference_embedding(profile: VoiceProfile, profile_dir: Path) -> Non
             storage.download(profile.reference_embedding_url, embedding_path, (object_name,))
         except FileNotFoundError:
             reference_embedding = embedding(profile.reference_wav)
-            save_embedding(embedding_path, reference_embedding)
+            temporary_path = embedding_path.with_suffix(".tmp.npy")
+            save_embedding(temporary_path, reference_embedding)
+            temporary_path.replace(embedding_path)
 
     storage.upload_once(embedding_path, object_name, "application/octet-stream")
     _upsert_profile(profile)
@@ -181,6 +195,11 @@ def _load_existing_profile(task_id: str, session: Path) -> VoiceProfile | None:
 
 
 def get_or_create_profile(task_id: str, vocals: Path, session: Path) -> VoiceProfile:
+    with _profile_lock(task_id):
+        return _get_or_create_profile(task_id, vocals, session)
+
+
+def _get_or_create_profile(task_id: str, vocals: Path, session: Path) -> VoiceProfile:
     existing = _load_existing_profile(task_id, session)
     if existing:
         return existing
