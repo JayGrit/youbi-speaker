@@ -254,6 +254,35 @@ class DubbingMultiSegmentProfileTest(unittest.TestCase):
         self.assertEqual(1, len(created_profiles))
         self.assertTrue(all(profile.task_id == "task-concurrent" for profile in profiles))
 
+    def test_voice_profile_embedding_failure_does_not_block_tts_profile(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Path(tmp)
+            reference = session / "reference.wav"
+            reference.write_bytes(b"ref")
+            profile = VoiceProfile(
+                task_id="task-embedding-fail",
+                sub_stage=db.SPEAKER_DUBBING_MULTI_SEGMENT_SUB_STAGE,
+                profile_version=1,
+                reference_item_index=1,
+                reference_text="source",
+                reference_wav=reference,
+                reference_wav_url="http://minio/ref.wav",
+                reference_embedding_url="http://minio/ref.npy",
+                generation_options={},
+                similarity_threshold=0.7,
+            )
+            upserts: list[dict] = []
+
+            with (
+                patch.object(voice_profile, "_ensure_reference_embedding", side_effect=RuntimeError("client closed")),
+                patch.object(voice_profile.db, "upsert_voice_profile", side_effect=lambda **kwargs: upserts.append(kwargs)),
+            ):
+                result = voice_profile._ensure_ready_profile(profile, session)
+
+        self.assertEqual(profile, result)
+        self.assertEqual("ready", upserts[0]["status"])
+        self.assertEqual("client closed", upserts[0]["error_message"])
+
     def test_similarity_success_upserts_segment_metrics(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             session = Path(tmp)
