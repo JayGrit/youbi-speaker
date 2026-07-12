@@ -87,12 +87,14 @@ def parse_object_ref(ref: str) -> ObjectRef | None:
         return None
 
     parsed = urlparse(value)
-    if parsed.scheme == "http" and parsed.hostname == "120.53.92.66" and parsed.port == 9000:
-        prefix = f"/{MINIO_BUCKET}/"
-        if not parsed.path.startswith(prefix):
+    endpoint_host, _ = _endpoint_parts()
+    endpoint = urlparse(f"//{endpoint_host}")
+    if parsed.scheme in {"http", "https"} and parsed.hostname == endpoint.hostname and parsed.port == endpoint.port:
+        parts = parsed.path.lstrip("/").split("/", 1)
+        if len(parts) != 2 or not parts[0] or not parts[1]:
             return None
-        object_name = parsed.path[len(prefix) :]
-        return ObjectRef(MINIO_BUCKET, object_name) if object_name else None
+        bucket, object_name = parts
+        return ObjectRef(bucket, object_name)
 
     return None
 
