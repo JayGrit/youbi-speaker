@@ -3,6 +3,8 @@ from __future__ import annotations
 import logging
 import shutil
 import time
+from collections.abc import Callable
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 
 from ydbi_speaker import db
@@ -17,11 +19,14 @@ from ydbi_speaker.config import (
     DUBBING_MULTI_SEGMENT_PROFILE_ENABLED,
     NARRATION_REFERENCE_AUDIO_URL,
     POLL_INTERVAL_SECONDS,
+    SPEAKER_MAX_IN_FLIGHT_SEGMENTS,
+    SPEAKER_TTS_CONCURRENCY,
 )
 from ydbi_speaker.service import SERVICE_NAME
 
 log = logging.getLogger(__name__)
 _CLEANUP_INTERVAL_SECONDS = 10 * 60
+TtsRunner = Callable[..., Path]
 
 
 def _is_empty_target_text_error(exc: Exception) -> bool:
@@ -126,13 +131,14 @@ def _prepare_references(task_id: str, vocals: Path, session: Path) -> tuple[Path
     return global_reference, segment_paths
 
 
-def handle_narration_segment(row: dict) -> tuple[Path, Path]:
+def handle_narration_segment(row: dict, tts_runner: TtsRunner | None = None) -> tuple[Path, Path]:
+    tts_runner = tts_runner or generate_tts_segment
     task_id = row["task_id"]
     session = storage.task_work_dir(task_id)
     item_index = int(row["item_index"])
     reference = _download_narration_reference(session)
     target_text = sanitize_target_text(row.get("dst_text"))
-    output = generate_tts_segment(
+    output = tts_runner(
         target_text,
         item_index,
         reference,
@@ -143,7 +149,8 @@ def handle_narration_segment(row: dict) -> tuple[Path, Path]:
     return reference, stabilize_narration_audio(output, session)
 
 
-def handle_main_segment(row: dict) -> tuple[Path, Path]:
+def handle_main_segment(row: dict, tts_runner: TtsRunner | None = None) -> tuple[Path, Path]:
+    tts_runner = tts_runner or generate_tts_segment
     task_id = row["task_id"]
     session = storage.task_work_dir(task_id)
     item_index = int(row["item_index"])
@@ -165,7 +172,7 @@ def handle_main_segment(row: dict) -> tuple[Path, Path]:
 
     fallback = fallback_reference(vocals_dir)
     try:
-        output = generate_tts_segment(
+        output = tts_runner(
             target_text,
             item_index,
             global_reference,
@@ -185,7 +192,8 @@ def handle_main_segment(row: dict) -> tuple[Path, Path]:
     return segment_reference, output
 
 
-def handle_dubbing_multi_segment(row: dict) -> tuple[Path, Path]:
+def handle_dubbing_multi_segment(row: dict, tts_runner: TtsRunner | None = None) -> tuple[Path, Path]:
+    tts_runner = tts_runner or generate_tts_segment
     task_id = row["task_id"]
     session = storage.task_work_dir(task_id)
     item_index = int(row["item_index"])
@@ -207,7 +215,7 @@ def handle_dubbing_multi_segment(row: dict) -> tuple[Path, Path]:
             return global_reference, balance_generated_audio(chunk_reference, session)
 
         fallback = fallback_reference(vocals_dir)
-        output = generate_tts_segment(
+        output = tts_runner(
             target_text,
             item_index,
             global_reference,
@@ -233,7 +241,7 @@ def handle_dubbing_multi_segment(row: dict) -> tuple[Path, Path]:
         record_similarity(profile=profile, row=row, generated_wav=adjusted, session=session)
         return profile.reference_wav, adjusted
 
-    output = generate_tts_segment(
+    output = tts_runner(
         target_text,
         item_index,
         profile.reference_wav,
@@ -247,15 +255,15 @@ def handle_dubbing_multi_segment(row: dict) -> tuple[Path, Path]:
     return profile.reference_wav, adjusted
 
 
-def handle_segment(row: dict) -> tuple[Path, Path]:
+def handle_segment(row: dict, tts_runner: TtsRunner | None = None) -> tuple[Path, Path]:
     if row.get("speaker_sub_stage") == db.SPEAKER_NARRATION_SUB_STAGE or row.get("task_type") == "narration":
-        return handle_narration_segment(row)
+        return handle_narration_segment(row, tts_runner)
     if (
         row.get("speaker_sub_stage") == db.SPEAKER_DUBBING_MULTI_SEGMENT_SUB_STAGE
         or row.get("task_type") in db.CHUNK_SPEAKER_TASK_TYPES
     ):
-        return handle_dubbing_multi_segment(row)
-    return handle_main_segment(row)
+        return handle_dubbing_multi_segment(row, tts_runner)
+    return handle_main_segment(row, tts_runner)
 
 
 def publish_segment_outputs(task_id: str, reference: Path, output: Path) -> tuple[str, str, str, str]:
@@ -333,102 +341,173 @@ def cleanup_successful_task_work_dirs() -> int:
     return cleaned
 
 
-def run_segment_worker() -> None:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    db.ensure_speaker_segment_schema()
-    db.ensure_speaker_profile_schema()
-    log.info("speaker service started; polling segments every %ss", POLL_INTERVAL_SECONDS)
-    next_cleanup_at = 0.0
-    while True:
-        try:
-            db.record_service_poll(SERVICE_NAME)
-            now = time.monotonic()
-            if now >= next_cleanup_at:
-                cleaned = cleanup_successful_task_work_dirs()
-                if cleaned:
-                    log.info("speaker cleaned %d successful task work dir(s)", cleaned)
-                next_cleanup_at = now + _CLEANUP_INTERVAL_SECONDS
-            recycled, _exhausted_task_ids = db.recycle_stale_speaker_segments()
-            if recycled:
-                log.warning("speaker recycled %d stale running/failed segment(s)", recycled)
-            initialized = db.initialize_ready_speaker_task()
-            if initialized:
-                task_id, segment_count = initialized
-                if segment_count == 0:
-                    db.mark_failed(
-                        SERVICE_NAME,
-                        task_id,
-                        f"speaker input text is empty for task: {task_id}",
-                        db.SPEAKER_NARRATION_SUB_STAGE if task_id.startswith("narration-") else db.SPEAKER_MAIN_SUB_STAGE,
-                    )
-                    continue
-                log.info("speaker task=%s initialized %d segment(s)", task_id, segment_count)
-            finalizable = db.find_finalizable_speaker_task()
-            if finalizable:
-                finalize_task(finalizable)
-                continue
+def _serial_tts_runner(tts_executor: ThreadPoolExecutor) -> TtsRunner:
+    def run(*args, **kwargs) -> Path:
+        return tts_executor.submit(generate_tts_segment, *args, **kwargs).result()
 
-            blessing = db.claim_ready_blessing_task()
-            if blessing:
-                try:
-                    process_blessing_task(blessing)
-                except Exception as exc:
-                    log.exception("speaker blessing failed task=%s", blessing.get("task_id"))
-                    db.mark_blessing_failed(str(blessing.get("task_id")), str(exc))
-                continue
+    return run
 
-            failed = db.find_terminal_failed_speaker_task()
+
+def _process_claimed_segment(claimed: dict, tts_executor: ThreadPoolExecutor) -> None:
+    task_id = claimed["task_id"]
+    item_index = int(claimed["item_index"])
+    log.debug("speaker segment started task=%s index=%d", task_id, item_index)
+    try:
+        reference, output = handle_segment(claimed, _serial_tts_runner(tts_executor))
+        reference_path, reference_url, output_path, output_url = publish_segment_outputs(
+            task_id,
+            reference,
+            output,
+        )
+        db.mark_speaker_segment_success(
+            int(claimed["id"]),
+            reference_path,
+            reference_url,
+            output_path,
+            output_url,
+        )
+        finalizable = db.find_finalizable_speaker_task(task_id)
+        if finalizable:
+            finalize_task(finalizable)
+    except Exception as exc:
+        log.exception("speaker segment failed task=%s index=%d", task_id, item_index)
+        exhausted = db.mark_speaker_segment_failed(int(claimed["id"]), str(exc))
+        if exhausted:
+            failed = db.find_terminal_failed_speaker_task(task_id)
             if failed:
                 db.mark_speaker_failed_from_segment(
                     failed["task_id"],
                     failed["error_message"],
                     str(failed.get("sub_stage") or db.SPEAKER_MAIN_SUB_STAGE),
                 )
-                continue
 
-            row = db.find_ready_speaker_segment()
-            if row:
-                claimed = db.claim_speaker_segment(int(row["id"]))
-                if not claimed:
+
+def _collect_finished_segments(inflight: dict[Future, dict]) -> int:
+    completed = 0
+    for future in list(inflight):
+        if not future.done():
+            continue
+        claimed = inflight.pop(future)
+        completed += 1
+        try:
+            future.result()
+        except Exception:
+            log.exception(
+                "speaker segment worker crashed task=%s index=%s",
+                claimed.get("task_id"),
+                claimed.get("item_index"),
+            )
+    return completed
+
+
+def _claim_ready_segments(
+    inflight: dict[Future, dict],
+    segment_executor: ThreadPoolExecutor,
+    tts_executor: ThreadPoolExecutor,
+    max_inflight: int,
+) -> int:
+    claimed_count = 0
+    while len(inflight) < max_inflight:
+        row = db.find_ready_speaker_segment()
+        if not row:
+            break
+        claimed = db.claim_speaker_segment(int(row["id"]))
+        if not claimed:
+            continue
+        future = segment_executor.submit(_process_claimed_segment, claimed, tts_executor)
+        inflight[future] = claimed
+        claimed_count += 1
+    return claimed_count
+
+
+def run_segment_worker() -> None:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    db.ensure_speaker_segment_schema()
+    db.ensure_speaker_profile_schema()
+    max_inflight = max(1, SPEAKER_MAX_IN_FLIGHT_SEGMENTS)
+    tts_concurrency = max(1, SPEAKER_TTS_CONCURRENCY)
+    log.info(
+        "speaker service started; polling segments every %ss max_inflight=%d tts_concurrency=%d",
+        POLL_INTERVAL_SECONDS,
+        max_inflight,
+        tts_concurrency,
+    )
+    next_cleanup_at = 0.0
+    with (
+        ThreadPoolExecutor(max_workers=max_inflight, thread_name_prefix="speaker-segment") as segment_executor,
+        ThreadPoolExecutor(max_workers=tts_concurrency, thread_name_prefix="speaker-tts") as tts_executor,
+    ):
+        inflight: dict[Future, dict] = {}
+        while True:
+            did_work = False
+            try:
+                db.record_service_poll(SERVICE_NAME)
+                if _collect_finished_segments(inflight):
+                    did_work = True
+                now = time.monotonic()
+                if now >= next_cleanup_at:
+                    cleaned = cleanup_successful_task_work_dirs()
+                    if cleaned:
+                        log.info("speaker cleaned %d successful task work dir(s)", cleaned)
+                    next_cleanup_at = now + _CLEANUP_INTERVAL_SECONDS
+                recycled, _exhausted_task_ids = db.recycle_stale_speaker_segments()
+                if recycled:
+                    log.warning("speaker recycled %d stale running/failed segment(s)", recycled)
+                    did_work = True
+                initialized = db.initialize_ready_speaker_task()
+                if initialized:
+                    task_id, segment_count = initialized
+                    if segment_count == 0:
+                        db.mark_failed(
+                            SERVICE_NAME,
+                            task_id,
+                            f"speaker input text is empty for task: {task_id}",
+                            db.SPEAKER_NARRATION_SUB_STAGE
+                            if task_id.startswith("narration-")
+                            else db.SPEAKER_MAIN_SUB_STAGE,
+                        )
+                        did_work = True
+                        continue
+                    log.info("speaker task=%s initialized %d segment(s)", task_id, segment_count)
+                    did_work = True
+                finalizable = db.find_finalizable_speaker_task()
+                if finalizable:
+                    finalize_task(finalizable)
+                    did_work = True
                     continue
-                task_id = claimed["task_id"]
-                item_index = int(claimed["item_index"])
-                log.debug("speaker segment started task=%s index=%d", task_id, item_index)
-                try:
-                    reference, output = handle_segment(claimed)
-                    reference_path, reference_url, output_path, output_url = publish_segment_outputs(
-                        task_id,
-                        reference,
-                        output,
+
+                blessing = db.claim_ready_blessing_task()
+                if blessing:
+                    try:
+                        process_blessing_task(blessing)
+                    except Exception as exc:
+                        log.exception("speaker blessing failed task=%s", blessing.get("task_id"))
+                        db.mark_blessing_failed(str(blessing.get("task_id")), str(exc))
+                    did_work = True
+                    continue
+
+                failed = db.find_terminal_failed_speaker_task()
+                if failed:
+                    db.mark_speaker_failed_from_segment(
+                        failed["task_id"],
+                        failed["error_message"],
+                        str(failed.get("sub_stage") or db.SPEAKER_MAIN_SUB_STAGE),
                     )
-                    db.mark_speaker_segment_success(
-                        int(claimed["id"]),
-                        reference_path,
-                        reference_url,
-                        output_path,
-                        output_url,
+                    did_work = True
+                    continue
+
+                if _claim_ready_segments(inflight, segment_executor, tts_executor, max_inflight):
+                    did_work = True
+            except Exception as exc:
+                if db.is_mysql_connection_error(exc):
+                    log.warning(
+                        "speaker failed to poll segment queue: network connection failed; retrying in %ss",
+                        POLL_INTERVAL_SECONDS,
                     )
-                    finalizable = db.find_finalizable_speaker_task(task_id)
-                    if finalizable:
-                        finalize_task(finalizable)
-                except Exception as exc:
-                    log.exception("speaker segment failed task=%s index=%d", task_id, item_index)
-                    exhausted = db.mark_speaker_segment_failed(int(claimed["id"]), str(exc))
-                    if exhausted:
-                        failed = db.find_terminal_failed_speaker_task(task_id)
-                        if failed:
-                            db.mark_speaker_failed_from_segment(
-                                failed["task_id"],
-                                failed["error_message"],
-                                str(failed.get("sub_stage") or db.SPEAKER_MAIN_SUB_STAGE),
-                            )
-                continue
-        except Exception as exc:
-            if db.is_mysql_connection_error(exc):
-                log.warning("speaker failed to poll segment queue: network connection failed; retrying in %ss", POLL_INTERVAL_SECONDS)
-            else:
-                log.exception("speaker failed to poll segment queue; retrying in %ss", POLL_INTERVAL_SECONDS)
-        time.sleep(POLL_INTERVAL_SECONDS)
+                else:
+                    log.exception("speaker failed to poll segment queue; retrying in %ss", POLL_INTERVAL_SECONDS)
+            if not did_work:
+                time.sleep(POLL_INTERVAL_SECONDS)
 
 
 def main() -> None:
