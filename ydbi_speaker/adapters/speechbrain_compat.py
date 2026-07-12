@@ -1,7 +1,17 @@
 from __future__ import annotations
 
 import contextlib
+import importlib.machinery
 import sys
+import types
+
+
+def _stub_module(name: str) -> types.ModuleType:
+    module = types.ModuleType(name)
+    module.__package__ = name.rpartition(".")[0]
+    module.__file__ = "<optional speechbrain k2_fsa stub>"
+    module.__spec__ = importlib.machinery.ModuleSpec(name, loader=None)
+    return module
 
 
 def suppress_optional_k2_lazy_import() -> None:
@@ -15,15 +25,16 @@ def suppress_optional_k2_lazy_import() -> None:
 
     name = "speechbrain.integrations.k2_fsa"
     module = sys.modules.get(name)
-    if module is None:
-        return
+    if module is not None:
+        module_type = type(module)
+        if module_type.__name__ != "LazyModule" or module_type.__module__ != "speechbrain.utils.importutils":
+            return
 
-    module_type = type(module)
-    if module_type.__name__ != "LazyModule" or module_type.__module__ != "speechbrain.utils.importutils":
-        return
-
-    sys.modules.pop(name, None)
+    stub = _stub_module(name)
+    sys.modules[name] = stub
     parent = sys.modules.get("speechbrain.integrations")
-    if parent is not None and getattr(parent, "__dict__", {}).get("k2_fsa") is module:
+    if parent is None:
+        return
+    if module is None or getattr(parent, "__dict__", {}).get("k2_fsa") is module:
         with contextlib.suppress(Exception):
-            delattr(parent, "k2_fsa")
+            setattr(parent, "k2_fsa", stub)

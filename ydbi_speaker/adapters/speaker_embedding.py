@@ -23,6 +23,7 @@ def _load_encoder():
     global _ENCODER
     with _ENCODER_LOCK:
         if _ENCODER is None:
+            suppress_optional_k2_lazy_import()
             try:
                 from speechbrain.inference.speaker import EncoderClassifier
             except ImportError:

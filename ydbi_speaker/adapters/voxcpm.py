@@ -194,6 +194,7 @@ def _load_model():
             warnings.catch_warnings(),
         ):
             warnings.simplefilter("ignore", FutureWarning)
+            suppress_optional_k2_lazy_import()
             from voxcpm import VoxCPM
 
             _patch_voxcpm_mps_audio_vae()
