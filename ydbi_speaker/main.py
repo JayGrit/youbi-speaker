@@ -5,7 +5,6 @@ import shutil
 import time
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
-from datetime import datetime, timezone
 from pathlib import Path
 
 from ydbi_speaker import db
@@ -28,11 +27,29 @@ from ydbi_speaker.service import SERVICE_NAME
 log = logging.getLogger(__name__)
 _CLEANUP_INTERVAL_SECONDS = 10 * 60
 TtsRunner = Callable[..., Path]
-
-
-def _timestamp() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
-
+_TIMING_STEP_LABELS = {
+    "segment_started": "开始处理",
+    "narration_reference_ready": "旁白参考音频就绪",
+    "vocals_downloaded": "人声下载",
+    "references_prepared": "参考音频准备",
+    "segment_reference_ready": "分段参考音频就绪",
+    "profile_ready": "音色档案就绪",
+    "tts_completed": "语音生成",
+    "audio_adjusted": "音频调整",
+    "similarity_recorded": "相似度记录",
+    "original_audio_selected": "使用原音频",
+    "handle_completed": "处理完成",
+    "handle_returned": "处理返回",
+    "published_outputs": "输出发布",
+    "db_marked_success": "数据库标记成功",
+    "finalizable_checked": "完成条件检查",
+    "task_finalized": "任务收尾",
+    "segment_completed": "分段完成",
+    "segment_failed": "分段失败",
+    "db_marked_failed": "数据库标记失败",
+    "terminal_failure_checked": "终态失败检查",
+    "task_marked_failed": "任务标记失败",
+}
 
 def _log_segment_timing(
     task_id: str,
@@ -43,19 +60,7 @@ def _log_segment_timing(
     **fields: object,
 ) -> None:
     duration = time.perf_counter() - started_at
-    total = duration if total_started_at is None else time.perf_counter() - total_started_at
-    suffix = " ".join(f"{key}={value}" for key, value in fields.items() if value is not None)
-    log.info(
-        "speaker timing task=%s index=%d step=%s at=%s duration_s=%.3f total_s=%.3f%s%s",
-        task_id,
-        item_index,
-        step,
-        _timestamp(),
-        duration,
-        total,
-        " " if suffix else "",
-        suffix,
-    )
+    log.info("%s(%d) step=%s 耗时%.3fs", task_id, item_index, _TIMING_STEP_LABELS.get(step, step), duration)
 
 
 def _is_empty_target_text_error(exc: Exception) -> bool:
@@ -435,7 +440,7 @@ def _process_claimed_segment(claimed: dict, tts_executor: ThreadPoolExecutor) ->
     task_id = claimed["task_id"]
     item_index = int(claimed["item_index"])
     total_started_at = time.perf_counter()
-    log.info("speaker timing task=%s index=%d step=segment_started at=%s", task_id, item_index, _timestamp())
+    _log_segment_timing(task_id, item_index, "segment_started", total_started_at, total_started_at)
     try:
         step_started_at = time.perf_counter()
         reference, output = handle_segment(claimed, _serial_tts_runner(tts_executor))
