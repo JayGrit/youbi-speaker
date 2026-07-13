@@ -5,6 +5,7 @@ import shutil
 import time
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
+from datetime import datetime, timezone
 from pathlib import Path
 
 from ydbi_speaker import db
@@ -27,6 +28,34 @@ from ydbi_speaker.service import SERVICE_NAME
 log = logging.getLogger(__name__)
 _CLEANUP_INTERVAL_SECONDS = 10 * 60
 TtsRunner = Callable[..., Path]
+
+
+def _timestamp() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+
+
+def _log_segment_timing(
+    task_id: str,
+    item_index: int,
+    step: str,
+    started_at: float,
+    total_started_at: float | None = None,
+    **fields: object,
+) -> None:
+    duration = time.perf_counter() - started_at
+    total = duration if total_started_at is None else time.perf_counter() - total_started_at
+    suffix = " ".join(f"{key}={value}" for key, value in fields.items() if value is not None)
+    log.info(
+        "speaker timing task=%s index=%d step=%s at=%s duration_s=%.3f total_s=%.3f%s%s",
+        task_id,
+        item_index,
+        step,
+        _timestamp(),
+        duration,
+        total,
+        " " if suffix else "",
+        suffix,
+    )
 
 
 def _is_empty_target_text_error(exc: Exception) -> bool:
@@ -134,10 +163,14 @@ def _prepare_references(task_id: str, vocals: Path, session: Path) -> tuple[Path
 def handle_narration_segment(row: dict, tts_runner: TtsRunner | None = None) -> tuple[Path, Path]:
     tts_runner = tts_runner or generate_tts_segment
     task_id = row["task_id"]
+    total_started_at = time.perf_counter()
     session = storage.task_work_dir(task_id)
     item_index = int(row["item_index"])
+    step_started_at = time.perf_counter()
     reference = _download_narration_reference(session)
+    _log_segment_timing(task_id, item_index, "narration_reference_ready", step_started_at, total_started_at)
     target_text = sanitize_target_text(row.get("dst_text"))
+    step_started_at = time.perf_counter()
     output = tts_runner(
         target_text,
         item_index,
@@ -146,18 +179,29 @@ def handle_narration_segment(row: dict, tts_runner: TtsRunner | None = None) -> 
         session,
         progress_label=f"{task_id}:{item_index}",
     )
-    return reference, stabilize_narration_audio(output, session)
+    _log_segment_timing(task_id, item_index, "tts_completed", step_started_at, total_started_at)
+    step_started_at = time.perf_counter()
+    stabilized = stabilize_narration_audio(output, session)
+    _log_segment_timing(task_id, item_index, "audio_adjusted", step_started_at, total_started_at)
+    _log_segment_timing(task_id, item_index, "handle_completed", total_started_at, total_started_at)
+    return reference, stabilized
 
 
 def handle_main_segment(row: dict, tts_runner: TtsRunner | None = None) -> tuple[Path, Path]:
     tts_runner = tts_runner or generate_tts_segment
     task_id = row["task_id"]
+    total_started_at = time.perf_counter()
     session = storage.task_work_dir(task_id)
     item_index = int(row["item_index"])
+    step_started_at = time.perf_counter()
     vocals = _download_vocals(row, session)
+    _log_segment_timing(task_id, item_index, "vocals_downloaded", step_started_at, total_started_at)
     vocals_dir = session / "segments" / "vocals"
+    step_started_at = time.perf_counter()
     global_reference, segment_paths = _prepare_references(task_id, vocals, session)
+    _log_segment_timing(task_id, item_index, "references_prepared", step_started_at, total_started_at)
 
+    step_started_at = time.perf_counter()
     segment_reference = segment_paths.get(item_index) or split_audio_segment(
         vocals,
         item_index,
@@ -165,13 +209,16 @@ def handle_main_segment(row: dict, tts_runner: TtsRunner | None = None) -> tuple
         int(row["end_time"]),
         session,
     )
+    _log_segment_timing(task_id, item_index, "segment_reference_ready", step_started_at, total_started_at)
     target_text = sanitize_target_text(row.get("dst_text"))
     if not target_text:
         log.info("speaker task=%s index=%d using original audio segment", task_id, item_index)
+        _log_segment_timing(task_id, item_index, "original_audio_selected", total_started_at, total_started_at)
         return segment_reference, segment_reference
 
     fallback = fallback_reference(vocals_dir)
     try:
+        step_started_at = time.perf_counter()
         output = tts_runner(
             target_text,
             item_index,
@@ -180,6 +227,7 @@ def handle_main_segment(row: dict, tts_runner: TtsRunner | None = None) -> tuple
             session,
             progress_label=f"{task_id}:{item_index}",
         )
+        _log_segment_timing(task_id, item_index, "tts_completed", step_started_at, total_started_at)
     except ValueError as exc:
         if not _is_empty_target_text_error(exc):
             raise
@@ -188,23 +236,31 @@ def handle_main_segment(row: dict, tts_runner: TtsRunner | None = None) -> tuple
             task_id,
             item_index,
         )
+        _log_segment_timing(task_id, item_index, "original_audio_selected", total_started_at, total_started_at)
         return segment_reference, segment_reference
+    _log_segment_timing(task_id, item_index, "handle_completed", total_started_at, total_started_at)
     return segment_reference, output
 
 
 def handle_dubbing_multi_segment(row: dict, tts_runner: TtsRunner | None = None) -> tuple[Path, Path]:
     tts_runner = tts_runner or generate_tts_segment
     task_id = row["task_id"]
+    total_started_at = time.perf_counter()
     session = storage.task_work_dir(task_id)
     item_index = int(row["item_index"])
+    step_started_at = time.perf_counter()
     vocals = _download_vocals(row, session)
+    _log_segment_timing(task_id, item_index, "vocals_downloaded", step_started_at, total_started_at)
     if not DUBBING_MULTI_SEGMENT_PROFILE_ENABLED:
         vocals_dir = session / "segments" / "vocals"
+        step_started_at = time.perf_counter()
         global_reference, _segment_paths = _prepare_references(task_id, vocals, session)
+        _log_segment_timing(task_id, item_index, "references_prepared", step_started_at, total_started_at)
 
         target_text = sanitize_target_text(row.get("dst_text"))
         if not target_text:
             log.info("speaker task=%s chunk=%d has no target text; using original chunk audio", task_id, item_index)
+            step_started_at = time.perf_counter()
             chunk_reference = split_audio_segment(
                 vocals,
                 item_index,
@@ -212,9 +268,15 @@ def handle_dubbing_multi_segment(row: dict, tts_runner: TtsRunner | None = None)
                 int(row["end_time"]),
                 session,
             )
-            return global_reference, balance_generated_audio(chunk_reference, session)
+            _log_segment_timing(task_id, item_index, "segment_reference_ready", step_started_at, total_started_at)
+            step_started_at = time.perf_counter()
+            adjusted = balance_generated_audio(chunk_reference, session)
+            _log_segment_timing(task_id, item_index, "audio_adjusted", step_started_at, total_started_at)
+            _log_segment_timing(task_id, item_index, "handle_completed", total_started_at, total_started_at)
+            return global_reference, adjusted
 
         fallback = fallback_reference(vocals_dir)
+        step_started_at = time.perf_counter()
         output = tts_runner(
             target_text,
             item_index,
@@ -223,13 +285,21 @@ def handle_dubbing_multi_segment(row: dict, tts_runner: TtsRunner | None = None)
             session,
             progress_label=f"{task_id}:chunk:{item_index}",
         )
-        return global_reference, balance_generated_audio(output, session)
+        _log_segment_timing(task_id, item_index, "tts_completed", step_started_at, total_started_at)
+        step_started_at = time.perf_counter()
+        adjusted = balance_generated_audio(output, session)
+        _log_segment_timing(task_id, item_index, "audio_adjusted", step_started_at, total_started_at)
+        _log_segment_timing(task_id, item_index, "handle_completed", total_started_at, total_started_at)
+        return global_reference, adjusted
 
+    step_started_at = time.perf_counter()
     profile = get_or_create_profile(task_id, vocals, session)
+    _log_segment_timing(task_id, item_index, "profile_ready", step_started_at, total_started_at)
 
     target_text = sanitize_target_text(row.get("dst_text"))
     if not target_text:
         log.info("speaker task=%s chunk=%d has no target text; using original chunk audio", task_id, item_index)
+        step_started_at = time.perf_counter()
         chunk_reference = split_audio_segment(
             vocals,
             item_index,
@@ -237,10 +307,17 @@ def handle_dubbing_multi_segment(row: dict, tts_runner: TtsRunner | None = None)
             int(row["end_time"]),
             session,
         )
+        _log_segment_timing(task_id, item_index, "segment_reference_ready", step_started_at, total_started_at)
+        step_started_at = time.perf_counter()
         adjusted = balance_generated_audio(chunk_reference, session)
+        _log_segment_timing(task_id, item_index, "audio_adjusted", step_started_at, total_started_at)
+        step_started_at = time.perf_counter()
         record_similarity(profile=profile, row=row, generated_wav=adjusted, session=session)
+        _log_segment_timing(task_id, item_index, "similarity_recorded", step_started_at, total_started_at)
+        _log_segment_timing(task_id, item_index, "handle_completed", total_started_at, total_started_at)
         return profile.reference_wav, adjusted
 
+    step_started_at = time.perf_counter()
     output = tts_runner(
         target_text,
         item_index,
@@ -250,8 +327,14 @@ def handle_dubbing_multi_segment(row: dict, tts_runner: TtsRunner | None = None)
         progress_label=f"{task_id}:chunk:{item_index}",
         generation_options_override=profile.generation_options,
     )
+    _log_segment_timing(task_id, item_index, "tts_completed", step_started_at, total_started_at)
+    step_started_at = time.perf_counter()
     adjusted = balance_generated_audio(output, session)
+    _log_segment_timing(task_id, item_index, "audio_adjusted", step_started_at, total_started_at)
+    step_started_at = time.perf_counter()
     record_similarity(profile=profile, row=row, generated_wav=adjusted, session=session)
+    _log_segment_timing(task_id, item_index, "similarity_recorded", step_started_at, total_started_at)
+    _log_segment_timing(task_id, item_index, "handle_completed", total_started_at, total_started_at)
     return profile.reference_wav, adjusted
 
 
@@ -351,14 +434,20 @@ def _serial_tts_runner(tts_executor: ThreadPoolExecutor) -> TtsRunner:
 def _process_claimed_segment(claimed: dict, tts_executor: ThreadPoolExecutor) -> None:
     task_id = claimed["task_id"]
     item_index = int(claimed["item_index"])
-    log.debug("speaker segment started task=%s index=%d", task_id, item_index)
+    total_started_at = time.perf_counter()
+    log.info("speaker timing task=%s index=%d step=segment_started at=%s", task_id, item_index, _timestamp())
     try:
+        step_started_at = time.perf_counter()
         reference, output = handle_segment(claimed, _serial_tts_runner(tts_executor))
+        _log_segment_timing(task_id, item_index, "handle_returned", step_started_at, total_started_at)
+        step_started_at = time.perf_counter()
         reference_path, reference_url, output_path, output_url = publish_segment_outputs(
             task_id,
             reference,
             output,
         )
+        _log_segment_timing(task_id, item_index, "published_outputs", step_started_at, total_started_at)
+        step_started_at = time.perf_counter()
         db.mark_speaker_segment_success(
             int(claimed["id"]),
             reference_path,
@@ -366,20 +455,40 @@ def _process_claimed_segment(claimed: dict, tts_executor: ThreadPoolExecutor) ->
             output_path,
             output_url,
         )
+        _log_segment_timing(task_id, item_index, "db_marked_success", step_started_at, total_started_at)
+        step_started_at = time.perf_counter()
         finalizable = db.find_finalizable_speaker_task(task_id)
+        _log_segment_timing(task_id, item_index, "finalizable_checked", step_started_at, total_started_at)
         if finalizable:
+            step_started_at = time.perf_counter()
             finalize_task(finalizable)
+            _log_segment_timing(task_id, item_index, "task_finalized", step_started_at, total_started_at)
+        _log_segment_timing(task_id, item_index, "segment_completed", total_started_at, total_started_at)
     except Exception as exc:
+        _log_segment_timing(task_id, item_index, "segment_failed", total_started_at, total_started_at)
         log.exception("speaker segment failed task=%s index=%d", task_id, item_index)
+        step_started_at = time.perf_counter()
         exhausted = db.mark_speaker_segment_failed(int(claimed["id"]), str(exc))
+        _log_segment_timing(
+            task_id,
+            item_index,
+            "db_marked_failed",
+            step_started_at,
+            total_started_at,
+            exhausted=exhausted,
+        )
         if exhausted:
+            step_started_at = time.perf_counter()
             failed = db.find_terminal_failed_speaker_task(task_id)
+            _log_segment_timing(task_id, item_index, "terminal_failure_checked", step_started_at, total_started_at)
             if failed:
+                step_started_at = time.perf_counter()
                 db.mark_speaker_failed_from_segment(
                     failed["task_id"],
                     failed["error_message"],
                     str(failed.get("sub_stage") or db.SPEAKER_MAIN_SUB_STAGE),
                 )
+                _log_segment_timing(task_id, item_index, "task_marked_failed", step_started_at, total_started_at)
 
 
 def _collect_finished_segments(inflight: dict[Future, dict]) -> int:
