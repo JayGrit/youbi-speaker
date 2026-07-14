@@ -18,7 +18,7 @@ from pydub import AudioSegment
 from tqdm import tqdm
 
 from .ffmpeg import configure_pydub_ffmpeg
-from .speechbrain_compat import suppress_optional_k2_lazy_import
+from .speechbrain_compat import suppress_optional_speechbrain_integrations
 from ..config import (
     VOXCPM_CFG_VALUE,
     VOXCPM_DENOISE,
@@ -194,7 +194,7 @@ def _load_model():
             warnings.catch_warnings(),
         ):
             warnings.simplefilter("ignore", FutureWarning)
-            suppress_optional_k2_lazy_import()
+            suppress_optional_speechbrain_integrations()
             from voxcpm import VoxCPM
 
             _patch_voxcpm_mps_audio_vae()
@@ -290,7 +290,7 @@ def generate_tts_segment(
     model = _load_model()
     progress_token = _PROGRESS_LABEL.set(progress_label)
     try:
-        suppress_optional_k2_lazy_import()
+        suppress_optional_speechbrain_integrations()
         options = dict(generation_options_override or generation_options())
         if combined_cloning:
             wav = model.generate(

@@ -5,7 +5,7 @@ from pathlib import Path
 
 import numpy as np
 
-from ydbi_speaker.adapters.speechbrain_compat import suppress_optional_k2_lazy_import
+from ydbi_speaker.adapters.speechbrain_compat import suppress_optional_speechbrain_integrations
 from ydbi_speaker.config import SPEECHBRAIN_SPEAKER_MODEL, SPEECHBRAIN_SPEAKER_MODEL_DIR
 
 _ENCODER = None
@@ -23,19 +23,19 @@ def _load_encoder():
     global _ENCODER
     with _ENCODER_LOCK:
         if _ENCODER is None:
-            suppress_optional_k2_lazy_import()
+            suppress_optional_speechbrain_integrations()
             try:
                 from speechbrain.inference.speaker import EncoderClassifier
             except ImportError:
                 from speechbrain.pretrained import EncoderClassifier
 
-            suppress_optional_k2_lazy_import()
+            suppress_optional_speechbrain_integrations()
             source, savedir = _model_source_and_savedir()
             _ENCODER = EncoderClassifier.from_hparams(
                 source=source,
                 savedir=savedir,
             )
-            suppress_optional_k2_lazy_import()
+            suppress_optional_speechbrain_integrations()
     return _ENCODER
 
 

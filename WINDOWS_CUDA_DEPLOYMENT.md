@@ -327,11 +327,16 @@ Run in foreground mode first:
 
 Foreground mode prints Python exceptions directly to the terminal.
 
-### `ModuleNotFoundError: No module named 'k2'`
+### SpeechBrain optional integration lazy import errors
 
-`k2` is an optional SpeechBrain integration and is not required by the speaker service. On Windows/Python 3.12, SpeechBrain can register `speechbrain.integrations.k2_fsa` as a lazy module. Later, `librosa.load()` may call Python stack inspection while importing its own optional modules, and that stack inspection can accidentally touch SpeechBrain's lazy `k2_fsa` object. That forces an unrelated `k2` import and fails if `k2` is not installed.
+SpeechBrain optional integrations such as `k2_fsa` and `nlp` are not required by the speaker service. On Windows/Python 3.12, SpeechBrain can register optional integrations like `speechbrain.integrations.k2_fsa` or `speechbrain.integrations.nlp` as lazy modules. Later, `librosa.load()` may call Python stack inspection while importing its own optional modules, and that stack inspection can accidentally touch one of SpeechBrain's lazy integration objects. That forces an unrelated optional import and can fail with errors like:
 
-The service includes a compatibility patch that removes only this optional lazy `k2_fsa` placeholder before VoxCPM generation. Update to the latest code and reinstall the project in editable mode:
+```text
+ModuleNotFoundError: No module named 'k2'
+Lazy import of LazyModule(package=None, target=speechbrain.integrations.nlp, loaded=False) failed
+```
+
+The service includes a compatibility patch that replaces optional SpeechBrain integration lazy modules with stubs before VoxCPM generation and speaker-similarity embedding. Update to the latest code and reinstall the project in editable mode:
 
 ```powershell
 git pull
@@ -339,7 +344,7 @@ git pull
 .\start-cuda.ps1
 ```
 
-Do not install `k2` for this service unless you explicitly need SpeechBrain's k2 FSA features.
+Do not install optional SpeechBrain integrations for this service unless you explicitly need those features.
 
 ### HuggingFace SSL error while fetching `speechbrain/spkrec-ecapa-voxceleb`
 
