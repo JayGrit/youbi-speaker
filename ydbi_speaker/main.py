@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import logging
 import shutil
 import time
@@ -422,9 +423,71 @@ def _serial_tts_runner(tts_executor: ThreadPoolExecutor) -> TtsRunner:
     return run
 
 
+def _callable_accepts_argument(fn: Callable[..., object], argument_name: str, positional_count: int) -> bool:
+    try:
+        signature = inspect.signature(fn)
+    except (TypeError, ValueError):
+        return True
+    parameters = signature.parameters.values()
+    if any(parameter.kind == inspect.Parameter.VAR_POSITIONAL for parameter in parameters):
+        return True
+    if argument_name in signature.parameters:
+        return True
+    positional_parameters = [
+        parameter
+        for parameter in signature.parameters.values()
+        if parameter.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+    ]
+    return len(positional_parameters) >= positional_count
+
+
+def _claimed_attempt_count(claimed: dict) -> int | None:
+    value = claimed.get("attempt_count")
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        log.warning(
+            "speaker segment invalid attempt_count ignored task=%s index=%s attempt=%r",
+            claimed.get("task_id"),
+            claimed.get("item_index"),
+            value,
+        )
+        return None
+
+
+def _mark_claimed_segment_success(
+    segment_id: int,
+    reference_path: str,
+    reference_url: str,
+    output_path: str,
+    output_url: str,
+    attempt_count: int | None,
+) -> bool:
+    marker = db.mark_speaker_segment_success
+    if attempt_count is not None and _callable_accepts_argument(marker, "attempt_count", 6):
+        result = marker(segment_id, reference_path, reference_url, output_path, output_url, attempt_count)
+    else:
+        if attempt_count is not None:
+            log.warning("speaker segment success marker lacks attempt_count guard; using legacy call")
+        result = marker(segment_id, reference_path, reference_url, output_path, output_url)
+    return True if result is None else bool(result)
+
+
+def _mark_claimed_segment_failed(segment_id: int, message: str, attempt_count: int | None) -> bool:
+    marker = db.mark_speaker_segment_failed
+    if attempt_count is not None and _callable_accepts_argument(marker, "attempt_count", 3):
+        return bool(marker(segment_id, message, attempt_count))
+    if attempt_count is not None:
+        log.warning("speaker segment failure marker lacks attempt_count guard; using legacy call")
+    return bool(marker(segment_id, message))
+
+
 def _process_claimed_segment(claimed: dict, tts_executor: ThreadPoolExecutor) -> None:
     task_id = claimed["task_id"]
     item_index = int(claimed["item_index"])
+    attempt_count = _claimed_attempt_count(claimed)
     total_started_at = time.perf_counter()
     try:
         reference, output = handle_segment(claimed, _serial_tts_runner(tts_executor))
@@ -436,13 +499,13 @@ def _process_claimed_segment(claimed: dict, tts_executor: ThreadPoolExecutor) ->
         )
         _log_segment_timing(task_id, item_index, "published_outputs", step_started_at, total_started_at)
         step_started_at = time.perf_counter()
-        updated = db.mark_speaker_segment_success(
+        updated = _mark_claimed_segment_success(
             int(claimed["id"]),
             reference_path,
             reference_url,
             output_path,
             output_url,
-            int(claimed["attempt_count"]),
+            attempt_count,
         )
         _log_segment_timing(task_id, item_index, "db_marked_success", step_started_at, total_started_at)
         if not updated:
@@ -463,7 +526,7 @@ def _process_claimed_segment(claimed: dict, tts_executor: ThreadPoolExecutor) ->
     except Exception as exc:
         log.exception("speaker segment failed task=%s index=%d", task_id, item_index)
         step_started_at = time.perf_counter()
-        exhausted = db.mark_speaker_segment_failed(int(claimed["id"]), str(exc), int(claimed["attempt_count"]))
+        exhausted = _mark_claimed_segment_failed(int(claimed["id"]), str(exc), attempt_count)
         _log_segment_timing(
             task_id,
             item_index,
