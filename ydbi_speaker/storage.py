@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-import shutil
 import json
+import shutil
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
@@ -23,6 +24,8 @@ from .config import (
 
 _ensured_buckets: set[str] = set()
 _uploaded_objects: set[tuple[str, str]] = set()
+_download_locks_guard = threading.Lock()
+_download_locks: dict[Path, threading.Lock] = {}
 
 
 @dataclass(frozen=True)
@@ -151,9 +154,28 @@ def object_prefix(prefix: str, bucket: str = MINIO_BUCKET) -> str:
 
 
 def _download_object(object_info: ObjectRef, destination: Path) -> Path:
-    client = _minio_client()
-    client.fget_object(object_info.bucket, object_info.object_name, str(destination))
+    lock = _download_lock(destination)
+    if not lock.acquire(blocking=False):
+        with lock:
+            if destination.exists() and destination.stat().st_size > 0:
+                return destination
+        lock.acquire()
+    try:
+        client = _minio_client()
+        client.fget_object(object_info.bucket, object_info.object_name, str(destination))
+    finally:
+        lock.release()
     return destination
+
+
+def _download_lock(destination: Path) -> threading.Lock:
+    key = destination.absolute()
+    with _download_locks_guard:
+        lock = _download_locks.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _download_locks[key] = lock
+        return lock
 
 
 def _object_exists(object_info: ObjectRef) -> bool:
