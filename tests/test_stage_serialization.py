@@ -345,9 +345,9 @@ class StageSerializationTest(unittest.TestCase):
 
         for sql, params in cursor.executed[:3]:
             self.assertIn("CASE WHEN vi.task_type = 'narration' THEN %s ELSE %s END", sql)
-            self.assertEqual((20 * 60, 3 * 60), params[-2:])
+            self.assertEqual((20 * 60, 100), params[-2:])
         self.assertIn("timed out after 1200s", cursor.executed[1][1][1])
-        self.assertIn("timed out after 180s", cursor.executed[1][1][2])
+        self.assertIn("timed out after 100s", cursor.executed[1][1][2])
 
     def test_narration_groups_sentence_rows_by_segment_index(self) -> None:
         cursor = NarrationInitCursor()

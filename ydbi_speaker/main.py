@@ -436,14 +436,23 @@ def _process_claimed_segment(claimed: dict, tts_executor: ThreadPoolExecutor) ->
         )
         _log_segment_timing(task_id, item_index, "published_outputs", step_started_at, total_started_at)
         step_started_at = time.perf_counter()
-        db.mark_speaker_segment_success(
+        updated = db.mark_speaker_segment_success(
             int(claimed["id"]),
             reference_path,
             reference_url,
             output_path,
             output_url,
+            int(claimed["attempt_count"]),
         )
         _log_segment_timing(task_id, item_index, "db_marked_success", step_started_at, total_started_at)
+        if not updated:
+            log.warning(
+                "speaker segment stale success ignored task=%s index=%d attempt=%s",
+                task_id,
+                item_index,
+                claimed.get("attempt_count"),
+            )
+            return
         step_started_at = time.perf_counter()
         finalizable = db.find_finalizable_speaker_task(task_id)
         _log_segment_timing(task_id, item_index, "finalizable_checked", step_started_at, total_started_at)
@@ -454,7 +463,7 @@ def _process_claimed_segment(claimed: dict, tts_executor: ThreadPoolExecutor) ->
     except Exception as exc:
         log.exception("speaker segment failed task=%s index=%d", task_id, item_index)
         step_started_at = time.perf_counter()
-        exhausted = db.mark_speaker_segment_failed(int(claimed["id"]), str(exc))
+        exhausted = db.mark_speaker_segment_failed(int(claimed["id"]), str(exc), int(claimed["attempt_count"]))
         _log_segment_timing(
             task_id,
             item_index,
