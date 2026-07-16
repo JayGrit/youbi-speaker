@@ -8,6 +8,8 @@ from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 
+from pydub import AudioSegment
+
 from ydbi_speaker import db
 from ydbi_speaker import storage
 from ydbi_speaker.adapters.audio import split_audio_segment, split_audio_segments
@@ -132,6 +134,20 @@ def _download_narration_reference(session: Path) -> Path:
     if destination.exists() and destination.stat().st_size > 0:
         return destination
     return storage.download(NARRATION_REFERENCE_AUDIO_URL, destination)
+
+
+def _download_ppt_reference(speaker: int, session: Path) -> Path:
+    reference_url = db.ppt_reference_voice_url(speaker)
+    if not reference_url:
+        label = "female" if speaker == 0 else "male"
+        raise FileNotFoundError(f"ppt {label} reference voice is missing in asseter_static")
+    suffix = Path(reference_url.split("?", 1)[0]).suffix or ".wav"
+    source = storage.download(reference_url, session / "input" / f"ppt-reference-{speaker}{suffix}")
+    wav = session / "input" / f"ppt-reference-{speaker}.wav"
+    if wav.exists() and wav.stat().st_size > 0:
+        return wav
+    AudioSegment.from_file(source).export(wav, format="wav")
+    return wav
 
 
 def handle(row: dict) -> dict[str, str]:
@@ -330,9 +346,36 @@ def handle_dubbing_multi_segment(row: dict, tts_runner: TtsRunner | None = None)
     return profile.reference_wav, adjusted
 
 
+def handle_ppt_dialogue_segment(row: dict, tts_runner: TtsRunner | None = None) -> tuple[Path, Path]:
+    task_id = row["task_id"]
+    item_index = int(row["item_index"])
+    text = sanitize_target_text(row.get("dst_text"))
+    if not text:
+        raise ValueError("ppt dialogue target text is empty")
+    try:
+        speaker = int(str(row.get("speaker") or "0").strip())
+    except ValueError:
+        speaker = 0
+    speaker = 0 if speaker == 0 else 1
+    session = storage.task_work_dir(task_id)
+    reference = _download_ppt_reference(speaker, session)
+    runner = tts_runner or generate_tts_segment
+    output = runner(
+        text,
+        item_index,
+        reference,
+        reference,
+        session,
+        progress_label=f"{task_id}:ppt:{item_index}",
+    )
+    return reference, output
+
+
 def handle_segment(row: dict, tts_runner: TtsRunner | None = None) -> tuple[Path, Path]:
     if row.get("speaker_sub_stage") == db.SPEAKER_NARRATION_SUB_STAGE or row.get("task_type") == "narration":
         return handle_narration_segment(row, tts_runner)
+    if row.get("speaker_sub_stage") == db.SPEAKER_PPT_DIALOGUE_SUB_STAGE or row.get("task_type") == "ppt":
+        return handle_ppt_dialogue_segment(row, tts_runner)
     if (
         row.get("speaker_sub_stage") == db.SPEAKER_DUBBING_MULTI_SEGMENT_SUB_STAGE
         or row.get("task_type") in db.CHUNK_SPEAKER_TASK_TYPES
@@ -384,6 +427,27 @@ def process_blessing_task(row: dict) -> None:
     log.info("speaker blessing task=%s succeeded audio=%s", task_id, output_url)
 
 
+def _finalize_ppt_dialogue_audio(task_id: str) -> str:
+    session = storage.task_work_dir(task_id)
+    segments = db.list_speaker_segments(task_id)
+    if not segments:
+        raise ValueError(f"ppt dialogue has no speaker segments: {task_id}")
+    merged = AudioSegment.silent(duration=0)
+    for row in segments:
+        item_index = int(row["item_index"])
+        local_path = session / "segments" / "tts" / f"{item_index + 1:04d}.wav"
+        if not local_path.exists() or local_path.stat().st_size == 0:
+            tts_url = str(row.get("tts_wav_url") or "").strip()
+            if not tts_url:
+                raise FileNotFoundError(f"ppt dialogue tts url is missing index={item_index}")
+            local_path = storage.download(tts_url, session / "finalize" / f"{item_index + 1:04d}.wav")
+        merged += AudioSegment.from_file(local_path)
+    output = session / "final" / "ppt_dialogue.wav"
+    output.parent.mkdir(parents=True, exist_ok=True)
+    merged.export(output, format="wav")
+    return storage.upload(output, f"{task_id}/speaker/ppt_dialogue.wav", "audio/wav")
+
+
 def finalize_task(row: dict) -> None:
     task_id = row["task_id"]
     sub_stage = str(row.get("sub_stage") or row.get("speaker_sub_stage") or db.SPEAKER_MAIN_SUB_STAGE)
@@ -393,6 +457,8 @@ def finalize_task(row: dict) -> None:
         "translation_json_path": translation_ref,
         "tts_segments_dir": tts_dir,
     }
+    if sub_stage == db.SPEAKER_PPT_DIALOGUE_SUB_STAGE or row.get("task_type") == "ppt":
+        db.mark_ppt_dialogue_success(task_id, _finalize_ppt_dialogue_audio(task_id))
     db.mark_success(SERVICE_NAME, task_id, fields, sub_stage)
     shutil.rmtree(storage.task_work_path(task_id), ignore_errors=True)
     log.info("speaker task %s finalized", task_id)

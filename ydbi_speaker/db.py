@@ -24,6 +24,7 @@ UPLOAD_SUBMISSION_TABLES = (
 HEARTBEAT_DEVICE_COLUMNS = ("Macbook Air M4", "Macmini M2", "LPXB", "MY_HP", "LPXB_HP", "TXY")
 PRODUCT_NARRATION_SENTENCE_TABLE = "product_narration_sentence"
 PRODUCT_BLESSING_TABLE = "product_blessing"
+PRODUCT_PPT_TABLE = "product_ppt"
 ASSETS_TABLE = "asseter_static"
 MAX_NARRATION_SEGMENT_CHARS = 500
 OPERATOR_COLUMN = "operator"
@@ -168,7 +169,10 @@ SPEAKER_MAIN_SUB_STAGE = "main"
 SPEAKER_NARRATION_SUB_STAGE = "narration"
 SPEAKER_DUBBING_MULTI_SEGMENT_SUB_STAGE = "dubbing_multi_segment"
 SPEAKER_BLESSING_SUB_STAGE = "blessing"
+SPEAKER_PPT_DIALOGUE_SUB_STAGE = "ppt_dialogue"
 BLESSING_REFERENCE_VOICE_REMARK = "blessing_reference_voice_20260709"
+PPT_FEMALE_REFERENCE_VOICE_REMARK = "ppt_dialogue_female_reference_voice_20260717"
+PPT_MALE_REFERENCE_VOICE_REMARK = "ppt_dialogue_male_reference_voice_20260717"
 TASK_TYPE_DUBBING_MULTI_SEGMENT = "dubbing_multi_segment"
 TASK_TYPE_DUBBING_CHUNK_ALIGNED = "dubbing_chunk_aligned"
 CHUNK_SPEAKER_TASK_TYPES = (
@@ -245,6 +249,17 @@ def _ensure_speaker_stage_schema_cur(cur) -> None:
             *CHUNK_SPEAKER_TASK_TYPES,
             SPEAKER_MAIN_SUB_STAGE,
         ),
+    )
+    cur.execute(
+        """
+        UPDATE distributor_task_stages sp
+        JOIN video_info vi ON vi.task_id = sp.task_id
+        SET sp.sub_stage = %s
+        WHERE sp.stage_name = 'speaker'
+          AND vi.task_type = 'ppt'
+          AND sp.sub_stage = %s
+        """,
+        (SPEAKER_PPT_DIALOGUE_SUB_STAGE, SPEAKER_MAIN_SUB_STAGE),
     )
 
 def _heartbeat_device_column() -> str | None:
@@ -379,6 +394,45 @@ def ensure_speaker_segment_schema() -> None:
             {
                 "tts_text": "TEXT NULL",
                 "background_music_url": "TEXT NULL",
+                "error_message": "TEXT NULL",
+                "started_at": "DATETIME NULL",
+                "completed_at": "DATETIME NULL",
+                OPERATOR_COLUMN: OPERATOR_COLUMN_DEFINITION,
+            },
+        )
+        cur.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {PRODUCT_PPT_TABLE} (
+              id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+              task_id VARCHAR(64) NOT NULL,
+              dialogue_srt_url TEXT NULL,
+              ppt_dialogue_json MEDIUMTEXT NULL,
+              ppt_dialogue_json_url TEXT NULL,
+              ppt_dialogue_audio_url TEXT NULL,
+              status VARCHAR(32) NOT NULL DEFAULT 'ready',
+              error_message TEXT NULL,
+              started_at DATETIME NULL,
+              completed_at DATETIME NULL,
+              `operator` VARCHAR(128) NULL,
+              created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+              UNIQUE KEY uk_product_ppt_task_id (task_id),
+              KEY idx_product_ppt_status (status, id),
+              CONSTRAINT fk_product_ppt_task
+                FOREIGN KEY (task_id) REFERENCES task (id)
+                ON UPDATE CASCADE ON DELETE CASCADE
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+            """
+        )
+        _ensure_columns(
+            cur,
+            PRODUCT_PPT_TABLE,
+            {
+                "dialogue_srt_url": "TEXT NULL",
+                "ppt_dialogue_json": "MEDIUMTEXT NULL",
+                "ppt_dialogue_json_url": "TEXT NULL",
+                "ppt_dialogue_audio_url": "TEXT NULL",
+                "status": "VARCHAR(32) NOT NULL DEFAULT 'ready'",
                 "error_message": "TEXT NULL",
                 "started_at": "DATETIME NULL",
                 "completed_at": "DATETIME NULL",
@@ -638,6 +692,30 @@ def _build_narration_segments(sentence_rows: list[dict[str, Any]]) -> list[str]:
     return segments
 
 
+def _build_ppt_dialogue_segments(raw_json: str) -> list[dict[str, Any]]:
+    try:
+        data = json.loads(raw_json)
+    except json.JSONDecodeError as exc:
+        raise ValueError("product_ppt.ppt_dialogue_json is not valid JSON") from exc
+    if not isinstance(data, list) or not data:
+        raise ValueError("product_ppt.ppt_dialogue_json must be a non-empty array")
+    segments: list[dict[str, Any]] = []
+    for index, item in enumerate(data):
+        if not isinstance(item, dict):
+            raise ValueError(f"ppt dialogue item {index} must be an object")
+        try:
+            speaker = int(item.get("speaker"))
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"ppt dialogue item {index} has invalid speaker") from exc
+        if speaker not in {0, 1}:
+            raise ValueError(f"ppt dialogue item {index} speaker must be 0 or 1")
+        content = str(item.get("content") or "").strip()
+        if not content:
+            raise ValueError(f"ppt dialogue item {index} content is empty")
+        segments.append({"speaker": speaker, "content": content})
+    return segments
+
+
 def initialize_ready_speaker_task() -> tuple[str, int] | None:
     ensure_speaker_segment_schema()
     with connect() as conn:
@@ -645,9 +723,10 @@ def initialize_ready_speaker_task() -> tuple[str, int] | None:
         cur = _dict_cursor(conn)
         cur.execute(
             """
-            SELECT sp.task_id, sp.sub_stage, vi.task_type
+            SELECT sp.task_id, sp.sub_stage, vi.task_type, pp.ppt_dialogue_json
             FROM distributor_task_stages sp
             JOIN video_info vi ON vi.task_id = sp.task_id
+            LEFT JOIN product_ppt pp ON pp.task_id = sp.task_id
             LEFT JOIN distributor_task_stages tr ON tr.task_id = sp.task_id AND tr.stage_name = 'translator' AND tr.sub_stage = 'main'
             WHERE sp.stage_name = 'speaker'
               AND sp.status = %s
@@ -668,7 +747,13 @@ def initialize_ready_speaker_task() -> tuple[str, int] | None:
                 )
                 OR (
                   sp.sub_stage = %s
+                  AND vi.task_type = 'ppt'
+                  AND NULLIF(TRIM(COALESCE(pp.ppt_dialogue_json, '')), '') IS NOT NULL
+                )
+                OR (
+                  sp.sub_stage = %s
                   AND vi.task_type <> 'narration'
+                  AND vi.task_type <> 'ppt'
                   AND vi.task_type NOT IN (%s, %s)
                   AND tr.status = %s
                 )
@@ -688,6 +773,7 @@ def initialize_ready_speaker_task() -> tuple[str, int] | None:
                 SPEAKER_DUBBING_MULTI_SEGMENT_SUB_STAGE,
                 *CHUNK_SPEAKER_TASK_TYPES,
                 SUCCESS,
+                SPEAKER_PPT_DIALOGUE_SUB_STAGE,
                 SPEAKER_MAIN_SUB_STAGE,
                 *CHUNK_SPEAKER_TASK_TYPES,
                 SUCCESS,
@@ -723,6 +809,32 @@ def initialize_ready_speaker_task() -> tuple[str, int] | None:
                 [
                     (task_id, item_index, SEGMENT_READY, segment_text, segment_text)
                     for item_index, segment_text in enumerate(segments)
+                ],
+            )
+            inserted = int(cur.rowcount)
+            conn.commit()
+            return task_id, inserted
+        if row.get("sub_stage") == SPEAKER_PPT_DIALOGUE_SUB_STAGE:
+            segments = _build_ppt_dialogue_segments(str(row.get("ppt_dialogue_json") or ""))
+            cur.executemany(
+                """
+                INSERT INTO speaker_segment
+                  (
+                    task_id, item_index, status, src_text, dst_text, src_lang, dst_lang,
+                    start_time, end_time, speaker
+                  )
+                VALUES (%s, %s, %s, %s, %s, 'zh', 'zh', 0, 0, %s)
+                """,
+                [
+                    (
+                        task_id,
+                        item_index,
+                        SEGMENT_READY,
+                        item["content"],
+                        item["content"],
+                        str(item["speaker"]),
+                    )
+                    for item_index, item in enumerate(segments)
                 ],
             )
             inserted = int(cur.rowcount)
@@ -837,6 +949,10 @@ def blessing_reference_voice_url() -> str:
     configured = os.environ.get("BLESSING_REFERENCE_VOICE_URL", "").strip()
     if configured:
         return configured
+    return _asset_voice_url_by_remark(BLESSING_REFERENCE_VOICE_REMARK)
+
+
+def _asset_voice_url_by_remark(remark: str) -> str:
     with connect() as conn:
         cur = conn.cursor()
         if not _staged_table_exists_cur(cur, ASSETS_TABLE):
@@ -850,10 +966,18 @@ def blessing_reference_voice_url() -> str:
             ORDER BY id DESC
             LIMIT 1
             """,
-            (BLESSING_REFERENCE_VOICE_REMARK,),
+            (remark,),
         )
         row = cur.fetchone()
         return str(_row_value(row) or "").strip() if row else ""
+
+
+def ppt_reference_voice_url(speaker: int) -> str:
+    if int(speaker) == 0:
+        configured = os.environ.get("PPT_FEMALE_REFERENCE_VOICE_URL", "").strip()
+        return configured or _asset_voice_url_by_remark(PPT_FEMALE_REFERENCE_VOICE_REMARK)
+    configured = os.environ.get("PPT_MALE_REFERENCE_VOICE_URL", "").strip()
+    return configured or _asset_voice_url_by_remark(PPT_MALE_REFERENCE_VOICE_REMARK)
 
 
 def mark_blessing_success(task_id: str, audio_url: str) -> None:
@@ -888,6 +1012,45 @@ def mark_blessing_failed(task_id: str, message: str) -> None:
         )
         conn.commit()
     mark_failed(SERVICE_NAME, task_id, message, SPEAKER_BLESSING_SUB_STAGE)
+
+
+def mark_ppt_dialogue_success(task_id: str, audio_url: str) -> None:
+    with connect() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            f"""
+            INSERT INTO {PRODUCT_PPT_TABLE}
+              (task_id, ppt_dialogue_audio_url, status, completed_at, error_message, `operator`)
+            VALUES (%s, %s, %s, NOW(), NULL, %s)
+            ON DUPLICATE KEY UPDATE
+              ppt_dialogue_audio_url = VALUES(ppt_dialogue_audio_url),
+              status = VALUES(status),
+              completed_at = VALUES(completed_at),
+              error_message = NULL,
+              `operator` = VALUES(`operator`)
+            """,
+            (task_id, audio_url, SUCCESS, _operator_value()),
+        )
+        conn.commit()
+
+
+def mark_ppt_dialogue_failed(task_id: str, message: str) -> None:
+    with connect() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            f"""
+            INSERT INTO {PRODUCT_PPT_TABLE}
+              (task_id, status, error_message, completed_at, `operator`)
+            VALUES (%s, %s, %s, NOW(), %s)
+            ON DUPLICATE KEY UPDATE
+              status = VALUES(status),
+              error_message = VALUES(error_message),
+              completed_at = VALUES(completed_at),
+              `operator` = VALUES(`operator`)
+            """,
+            (task_id, FAILED, message, _operator_value()),
+        )
+        conn.commit()
 
 
 def get_task(task_id: str) -> dict[str, Any] | None:
@@ -936,6 +1099,7 @@ def find_ready_speaker_segment() -> dict[str, Any] | None:
              AND sp.sub_stage = CASE
                    WHEN vi.task_type = 'narration' THEN %s
                    WHEN vi.task_type IN (%s, %s) THEN %s
+                   WHEN vi.task_type = 'ppt' THEN %s
                    ELSE %s
                  END
             WHERE seg.status = %s
@@ -947,6 +1111,7 @@ def find_ready_speaker_segment() -> dict[str, Any] | None:
                 SPEAKER_NARRATION_SUB_STAGE,
                 *CHUNK_SPEAKER_TASK_TYPES,
                 SPEAKER_DUBBING_MULTI_SEGMENT_SUB_STAGE,
+                SPEAKER_PPT_DIALOGUE_SUB_STAGE,
                 SPEAKER_MAIN_SUB_STAGE,
                 SEGMENT_READY,
                 READY,
@@ -979,6 +1144,7 @@ def find_ready_speaker_segment() -> dict[str, Any] | None:
              AND sp.sub_stage = CASE
                    WHEN vi.task_type = 'narration' THEN %s
                    WHEN vi.task_type IN (%s, %s) THEN %s
+                   WHEN vi.task_type = 'ppt' THEN %s
                    ELSE %s
                  END
             JOIN (
@@ -1007,6 +1173,7 @@ def find_ready_speaker_segment() -> dict[str, Any] | None:
                 SPEAKER_NARRATION_SUB_STAGE,
                 *CHUNK_SPEAKER_TASK_TYPES,
                 SPEAKER_DUBBING_MULTI_SEGMENT_SUB_STAGE,
+                SPEAKER_PPT_DIALOGUE_SUB_STAGE,
                 SPEAKER_MAIN_SUB_STAGE,
                 SEGMENT_SUCCESS,
                 *candidate_task_ids,
@@ -1037,6 +1204,7 @@ def claim_speaker_segment(segment_id: int) -> dict[str, Any] | None:
              AND sp.sub_stage = CASE
                    WHEN vi.task_type = 'narration' THEN %s
                    WHEN vi.task_type IN (%s, %s) THEN %s
+                   WHEN vi.task_type = 'ppt' THEN %s
                    ELSE %s
                  END
             SET seg.status = %s,
@@ -1052,6 +1220,7 @@ def claim_speaker_segment(segment_id: int) -> dict[str, Any] | None:
                 SPEAKER_NARRATION_SUB_STAGE,
                 *CHUNK_SPEAKER_TASK_TYPES,
                 SPEAKER_DUBBING_MULTI_SEGMENT_SUB_STAGE,
+                SPEAKER_PPT_DIALOGUE_SUB_STAGE,
                 SPEAKER_MAIN_SUB_STAGE,
                 SEGMENT_RUNNING,
                 operator,
@@ -1138,6 +1307,7 @@ def get_speaker_segment(task_id: str, item_index: int) -> dict[str, Any] | None:
              AND sp.sub_stage = CASE
                    WHEN vi.task_type = 'narration' THEN %s
                    WHEN vi.task_type IN (%s, %s) THEN %s
+                   WHEN vi.task_type = 'ppt' THEN %s
                    ELSE %s
                  END
             WHERE seg.task_id = %s
@@ -1148,6 +1318,7 @@ def get_speaker_segment(task_id: str, item_index: int) -> dict[str, Any] | None:
                 SPEAKER_NARRATION_SUB_STAGE,
                 *CHUNK_SPEAKER_TASK_TYPES,
                 SPEAKER_DUBBING_MULTI_SEGMENT_SUB_STAGE,
+                SPEAKER_PPT_DIALOGUE_SUB_STAGE,
                 SPEAKER_MAIN_SUB_STAGE,
                 task_id,
                 item_index,
@@ -1350,6 +1521,7 @@ def recycle_stale_speaker_segments() -> tuple[int, list[str]]:
              AND sp.sub_stage = CASE
                    WHEN vi.task_type = 'narration' THEN %s
                    WHEN vi.task_type IN (%s, %s) THEN %s
+                   WHEN vi.task_type = 'ppt' THEN %s
                    ELSE %s
                  END
             WHERE seg.status = %s
@@ -1363,6 +1535,7 @@ def recycle_stale_speaker_segments() -> tuple[int, list[str]]:
                 SPEAKER_NARRATION_SUB_STAGE,
                 *CHUNK_SPEAKER_TASK_TYPES,
                 SPEAKER_DUBBING_MULTI_SEGMENT_SUB_STAGE,
+                SPEAKER_PPT_DIALOGUE_SUB_STAGE,
                 SPEAKER_MAIN_SUB_STAGE,
                 SEGMENT_FAILED,
                 READY,
@@ -1382,6 +1555,7 @@ def recycle_stale_speaker_segments() -> tuple[int, list[str]]:
              AND sp.sub_stage = CASE
                    WHEN vi.task_type = 'narration' THEN %s
                    WHEN vi.task_type IN (%s, %s) THEN %s
+                   WHEN vi.task_type = 'ppt' THEN %s
                    ELSE %s
                  END
             SET seg.status = %s,
@@ -1401,6 +1575,7 @@ def recycle_stale_speaker_segments() -> tuple[int, list[str]]:
                 SPEAKER_NARRATION_SUB_STAGE,
                 *CHUNK_SPEAKER_TASK_TYPES,
                 SPEAKER_DUBBING_MULTI_SEGMENT_SUB_STAGE,
+                SPEAKER_PPT_DIALOGUE_SUB_STAGE,
                 SPEAKER_MAIN_SUB_STAGE,
                 SEGMENT_READY,
                 failed_recycle_message,
@@ -1430,6 +1605,10 @@ def recycle_stale_speaker_segments() -> tuple[int, list[str]]:
                           SELECT 1 FROM video_info vi
                           WHERE vi.task_id = sp.task_id AND vi.task_type IN (%s, %s)
                         ) THEN %s
+                        WHEN EXISTS (
+                          SELECT 1 FROM video_info vi
+                          WHERE vi.task_id = sp.task_id AND vi.task_type = 'ppt'
+                        ) THEN %s
                         ELSE %s
                       END
                   AND sp.status = %s
@@ -1440,6 +1619,7 @@ def recycle_stale_speaker_segments() -> tuple[int, list[str]]:
                     SPEAKER_NARRATION_SUB_STAGE,
                     *CHUNK_SPEAKER_TASK_TYPES,
                     SPEAKER_DUBBING_MULTI_SEGMENT_SUB_STAGE,
+                    SPEAKER_PPT_DIALOGUE_SUB_STAGE,
                     SPEAKER_MAIN_SUB_STAGE,
                     FAILED,
                 ),
@@ -1459,6 +1639,7 @@ def find_finalizable_speaker_task(task_id: str | None = None) -> dict[str, Any] 
         SPEAKER_DUBBING_MULTI_SEGMENT_SUB_STAGE,
         *CHUNK_SPEAKER_TASK_TYPES,
         SUCCESS,
+        SPEAKER_PPT_DIALOGUE_SUB_STAGE,
         SPEAKER_MAIN_SUB_STAGE,
         *CHUNK_SPEAKER_TASK_TYPES,
         SUCCESS,
@@ -1479,6 +1660,7 @@ def find_finalizable_speaker_task(task_id: str | None = None) -> dict[str, Any] 
               AND (
                 (sp.sub_stage = %s AND vi.task_type = 'narration')
                 OR (sp.sub_stage = %s AND vi.task_type IN (%s, %s) AND tr.status = %s)
+                OR (sp.sub_stage = %s AND vi.task_type = 'ppt')
                 OR (sp.sub_stage = %s AND vi.task_type <> 'narration' AND vi.task_type NOT IN (%s, %s) AND tr.status = %s)
               )
               {task_filter}
@@ -1510,6 +1692,7 @@ def find_terminal_failed_speaker_task(task_id: str | None = None) -> dict[str, A
         SPEAKER_NARRATION_SUB_STAGE,
         SPEAKER_DUBBING_MULTI_SEGMENT_SUB_STAGE,
         *CHUNK_SPEAKER_TASK_TYPES,
+        SPEAKER_PPT_DIALOGUE_SUB_STAGE,
         SPEAKER_MAIN_SUB_STAGE,
         *CHUNK_SPEAKER_TASK_TYPES,
     ]
@@ -1542,6 +1725,7 @@ def find_terminal_failed_speaker_task(task_id: str | None = None) -> dict[str, A
               AND (
                 (sp.sub_stage = %s AND vi.task_type = 'narration')
                 OR (sp.sub_stage = %s AND vi.task_type IN (%s, %s))
+                OR (sp.sub_stage = %s AND vi.task_type = 'ppt')
                 OR (sp.sub_stage = %s AND vi.task_type <> 'narration' AND vi.task_type NOT IN (%s, %s))
               )
               {task_filter}
@@ -1587,6 +1771,8 @@ def mark_speaker_failed_from_segment(
     message: str,
     sub_stage: str = SPEAKER_MAIN_SUB_STAGE,
 ) -> None:
+    if sub_stage == SPEAKER_PPT_DIALOGUE_SUB_STAGE:
+        mark_ppt_dialogue_failed(task_id, message)
     mark_failed(SERVICE_NAME, task_id, message, sub_stage)
 
 
