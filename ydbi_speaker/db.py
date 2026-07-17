@@ -213,6 +213,7 @@ def _ensure_columns(cur, table: str, columns: Mapping[str, str]) -> None:
 
 
 def ensure_speaker_stage_schema() -> None:
+    return
     global _speaker_stage_schema_ready
     if _speaker_stage_schema_ready:
         return
@@ -323,6 +324,7 @@ def record_service_poll(stage_name: str) -> None:
 
 
 def ensure_speaker_segment_schema() -> None:
+    return
     global _segment_schema_ready
     if _segment_schema_ready:
         return
@@ -474,6 +476,7 @@ def ensure_speaker_segment_schema() -> None:
 
 
 def ensure_speaker_profile_schema() -> None:
+    return
     global _profile_schema_ready
     if _profile_schema_ready:
         return
@@ -1084,7 +1087,6 @@ def find_ready(stage_name: str) -> dict[str, Any] | None:
 
 def find_ready_speaker_segment() -> dict[str, Any] | None:
     ensure_speaker_segment_schema()
-    video_info.ensure_schema()
     with connect() as conn:
         cur = _dict_cursor(conn)
         cur.execute(
@@ -1190,7 +1192,6 @@ def find_ready_speaker_segment() -> dict[str, Any] | None:
 
 def claim_speaker_segment(segment_id: int) -> dict[str, Any] | None:
     operator = _operator_value()
-    video_info.ensure_schema()
     with connect() as conn:
         cur = conn.cursor()
         _ensure_operator_columns(cur, ("speaker", "speaker_segment"))
@@ -1289,7 +1290,6 @@ def list_speaker_segments(task_id: str) -> list[dict[str, Any]]:
 
 def get_speaker_segment(task_id: str, item_index: int) -> dict[str, Any] | None:
     ensure_speaker_segment_schema()
-    video_info.ensure_schema()
     with connect() as conn:
         cur = _dict_cursor(conn)
         cur.execute(
