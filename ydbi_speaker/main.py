@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import inspect
 import logging
+import os
 import shutil
 import time
 from collections.abc import Callable
@@ -29,6 +30,7 @@ from ydbi_speaker.service import SERVICE_NAME
 
 log = logging.getLogger(__name__)
 _CLEANUP_INTERVAL_SECONDS = 10 * 60
+CUDA_OOM_EXIT_CODE = 75
 TtsRunner = Callable[..., Path]
 _TIMING_STEP_LABELS = {
     "narration_reference_ready": "旁白参考音频就绪",
@@ -62,6 +64,21 @@ def _log_segment_timing(
 
 def _is_empty_target_text_error(exc: Exception) -> bool:
     return "target text must be a non-empty string" in str(exc)
+
+
+def _is_cuda_out_of_memory_error(exc: BaseException) -> bool:
+    current: BaseException | None = exc
+    while current is not None:
+        message = str(current).lower()
+        exc_name = current.__class__.__name__.lower()
+        if "outofmemoryerror" in exc_name and "cuda" in message:
+            return True
+        if "cuda out of memory" in message:
+            return True
+        if "torch.cuda.outofmemoryerror" in message:
+            return True
+        current = current.__cause__ or current.__context__
+    return False
 
 
 def _vocals_object_candidates(task_id: str) -> tuple[str, ...]:
@@ -590,6 +607,25 @@ def _process_claimed_segment(claimed: dict, tts_executor: ThreadPoolExecutor) ->
             finalize_task(finalizable)
             _log_segment_timing(task_id, item_index, "task_finalized", step_started_at, total_started_at)
     except Exception as exc:
+        if _is_cuda_out_of_memory_error(exc):
+            message = f"speaker CUDA out of memory; restarting worker: {exc}"
+            log.critical("speaker segment hit CUDA OOM task=%s index=%d; restarting process", task_id, item_index)
+            try:
+                released = db.reset_speaker_segment_after_worker_crash(
+                    int(claimed["id"]),
+                    message,
+                    attempt_count,
+                )
+                if not released:
+                    log.warning(
+                        "speaker CUDA OOM segment release skipped task=%s index=%d attempt=%s",
+                        task_id,
+                        item_index,
+                        claimed.get("attempt_count"),
+                    )
+            except Exception:
+                log.exception("speaker failed to release CUDA OOM segment before restart")
+            os._exit(CUDA_OOM_EXIT_CODE)
         log.exception("speaker segment failed task=%s index=%d", task_id, item_index)
         step_started_at = time.perf_counter()
         exhausted = _mark_claimed_segment_failed(int(claimed["id"]), str(exc), attempt_count)

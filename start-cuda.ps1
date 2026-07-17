@@ -1,6 +1,7 @@
 param(
   [string]$Device = "LPXB_HP",
-  [switch]$Background
+  [switch]$Background,
+  [int]$RestartCheckSeconds = 5
 )
 
 $ErrorActionPreference = "Stop"
@@ -12,6 +13,7 @@ $VoxCpmModelDir = Join-Path $ModelCacheDir "OpenBMB__VoxCPM2"
 $StdoutLog = Join-Path $Root "speaker.out.log"
 $StderrLog = Join-Path $Root "speaker.err.log"
 $LocalFfmpegBin = Join-Path $Root "ffmpeg\bin"
+$CudaOomExitCode = 75
 
 if (-not (Test-Path -LiteralPath $Python)) {
   throw "Python virtual environment not found: $Python"
@@ -80,6 +82,7 @@ Write-Host "Model: $VoxCpmModelDir"
 Write-Host "FFmpeg: $env:FFMPEG_BINARY"
 Write-Host "SpeechBrain speaker model: $env:SPEECHBRAIN_SPEAKER_MODEL_DIR"
 Write-Host "Auto update: origin/main wins every 60 seconds"
+Write-Host "Restart check interval: $RestartCheckSeconds seconds"
 if ($env:FFPROBE_BINARY) {
   Write-Host "FFprobe: $env:FFPROBE_BINARY"
 }
@@ -195,10 +198,14 @@ function Update-Repository {
 $Process = Start-SpeakerProcess
 try {
   while ($true) {
-    Start-Sleep -Seconds 60
+    Start-Sleep -Seconds $RestartCheckSeconds
 
     if ($Process.HasExited) {
-      Write-Warning "speaker exited with code $($Process.ExitCode); restarting."
+      if ($Process.ExitCode -eq $CudaOomExitCode) {
+        Write-Warning "speaker exited after CUDA out of memory with code $($Process.ExitCode); restarting."
+      } else {
+        Write-Warning "speaker exited with code $($Process.ExitCode); restarting."
+      }
       $Process = Start-SpeakerProcess
       continue
     }

@@ -1395,6 +1395,51 @@ def mark_speaker_segment_success(
         return updated
 
 
+def reset_speaker_segment_after_worker_crash(
+    segment_id: int,
+    message: str,
+    attempt_count: int | None = None,
+) -> bool:
+    with connect() as conn:
+        cur = _dict_cursor(conn)
+        cur.execute("SELECT status, attempt_count, max_attempts FROM speaker_segment WHERE id = %s", (segment_id,))
+        row = cur.fetchone()
+        if not row:
+            conn.commit()
+            return False
+        if attempt_count is not None and (
+            int(row["attempt_count"]) != attempt_count or str(row["status"]) != SEGMENT_RUNNING
+        ):
+            conn.commit()
+            return False
+
+        exhausted = int(row["attempt_count"]) >= int(row["max_attempts"])
+        status = SEGMENT_FAILED if exhausted else SEGMENT_READY
+        completed_at = "NOW()" if exhausted else "NULL"
+        where = "id = %s AND status = %s"
+        values: list[Any] = [status, message, segment_id, SEGMENT_RUNNING]
+        if attempt_count is not None:
+            where += " AND attempt_count = %s"
+            values.append(attempt_count)
+
+        cur = conn.cursor()
+        cur.execute(
+            f"""
+            UPDATE speaker_segment
+            SET status = %s,
+                error_message = %s,
+                started_at = NULL,
+                completed_at = {completed_at},
+                `operator` = NULL
+            WHERE {where}
+            """,
+            tuple(values),
+        )
+        updated = cur.rowcount == 1
+        conn.commit()
+        return updated
+
+
 def mark_speaker_segment_failed(segment_id: int, message: str, attempt_count: int | None = None) -> bool:
     with connect() as conn:
         cur = _dict_cursor(conn)

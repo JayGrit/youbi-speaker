@@ -156,6 +156,33 @@ class SegmentWorkerConcurrencyTest(unittest.TestCase):
 
         mark_failed.assert_called_once_with(9, "boom")
 
+    def test_cuda_oom_exception_releases_segment_and_exits_worker(self) -> None:
+        claimed = {"id": 9, "task_id": "task-oom", "item_index": 4, "attempt_count": 2}
+        error = RuntimeError("CUDA out of memory. Tried to allocate 566.00 MiB.")
+
+        with (
+            ThreadPoolExecutor(max_workers=1) as tts_executor,
+            patch.object(main, "handle_segment", side_effect=error),
+            patch.object(main.db, "reset_speaker_segment_after_worker_crash", return_value=True) as reset_segment,
+            patch.object(main.db, "mark_speaker_segment_failed") as mark_failed,
+            patch.object(main.os, "_exit", side_effect=SystemExit) as exit_process,
+        ):
+            with self.assertRaises(SystemExit):
+                main._process_claimed_segment(claimed, tts_executor)
+
+        reset_segment.assert_called_once()
+        self.assertIn("CUDA out of memory", reset_segment.call_args.args[1])
+        reset_segment.assert_called_once_with(9, reset_segment.call_args.args[1], 2)
+        exit_process.assert_called_once_with(main.CUDA_OOM_EXIT_CODE)
+        mark_failed.assert_not_called()
+
+    def test_cuda_oom_detection_checks_exception_chain(self) -> None:
+        root = RuntimeError("CUDA out of memory. Tried to allocate 566.00 MiB.")
+        wrapped = RuntimeError("tts failed")
+        wrapped.__cause__ = root
+
+        self.assertTrue(main._is_cuda_out_of_memory_error(wrapped))
+
     def test_exhausted_segment_marks_task_failed(self) -> None:
         claimed = {"id": 9, "task_id": "task-fail", "item_index": 4}
         failed_row = {
