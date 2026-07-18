@@ -122,8 +122,8 @@ def _ensure_staged_account_columns_cur(cur) -> bool:
     return True
 
 
-def _task_has_upload_submission_cur(cur, task_id: str, account_key: str) -> bool:
-    if not task_id or not account_key:
+def _task_has_upload_submission_cur(cur, task_id: str, topic: str) -> bool:
+    if not task_id or not topic:
         return False
     for table in UPLOAD_SUBMISSION_TABLES:
         if not _staged_table_exists_cur(cur, table):
@@ -132,10 +132,10 @@ def _task_has_upload_submission_cur(cur, task_id: str, account_key: str) -> bool
             f"""
             SELECT 1
             FROM {table}
-            WHERE task_id = %s AND account_key = %s
+            WHERE task_id = %s AND topic = %s
             LIMIT 1
             """,
-            (task_id, account_key),
+            (task_id, topic),
         )
         if cur.fetchone():
             return True
@@ -468,8 +468,8 @@ def ensure_speaker_segment_schema() -> None:
         _ensure_index_cur(
             cur,
             "uploader_task",
-            "idx_uploader_task_account_status",
-            "`account_key`, `status`",
+            "idx_uploader_task_topic_status",
+            "`topic`, `status`",
         )
         conn.commit()
     _segment_schema_ready = True
