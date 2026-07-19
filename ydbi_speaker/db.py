@@ -7,7 +7,7 @@ from typing import Any
 
 import mysql.connector
 
-from . import video_info
+from . import task_info
 from .config import (
     MYSQL_CONFIG,
     NARRATION_SEGMENT_RUNNING_TIMEOUT_SECONDS,
@@ -228,7 +228,7 @@ def _ensure_speaker_stage_schema_cur(cur) -> None:
     cur.execute(
         """
         UPDATE distributor_task_stages sp
-        JOIN video_info vi ON vi.task_id = sp.task_id
+        JOIN task_info vi ON vi.task_id = sp.task_id
         SET sp.sub_stage = %s
         WHERE sp.stage_name = 'speaker'
           AND vi.task_type = 'narration'
@@ -239,7 +239,7 @@ def _ensure_speaker_stage_schema_cur(cur) -> None:
     cur.execute(
         """
         UPDATE distributor_task_stages sp
-        JOIN video_info vi ON vi.task_id = sp.task_id
+        JOIN task_info vi ON vi.task_id = sp.task_id
         SET sp.sub_stage = %s
         WHERE sp.stage_name = 'speaker'
           AND vi.task_type IN (%s, %s)
@@ -254,7 +254,7 @@ def _ensure_speaker_stage_schema_cur(cur) -> None:
     cur.execute(
         """
         UPDATE distributor_task_stages sp
-        JOIN video_info vi ON vi.task_id = sp.task_id
+        JOIN task_info vi ON vi.task_id = sp.task_id
         SET sp.sub_stage = %s
         WHERE sp.stage_name = 'speaker'
           AND vi.task_type = 'ppt'
@@ -728,7 +728,7 @@ def initialize_ready_speaker_task() -> tuple[str, int] | None:
             """
             SELECT sp.task_id, sp.sub_stage, vi.task_type, pp.ppt_dialogue_json
             FROM distributor_task_stages sp
-            JOIN video_info vi ON vi.task_id = sp.task_id
+            JOIN task_info vi ON vi.task_id = sp.task_id
             LEFT JOIN product_ppt pp ON pp.task_id = sp.task_id
             LEFT JOIN distributor_task_stages tr ON tr.task_id = sp.task_id AND tr.stage_name = 'translator' AND tr.sub_stage = 'main'
             WHERE sp.stage_name = 'speaker'
@@ -908,7 +908,7 @@ def claim_ready_blessing_task() -> dict[str, Any] | None:
             f"""
             SELECT sp.task_id, pb.tts_text
             FROM distributor_task_stages sp
-            JOIN video_info vi ON vi.task_id = sp.task_id
+            JOIN task_info vi ON vi.task_id = sp.task_id
             JOIN {PRODUCT_BLESSING_TABLE} pb ON pb.task_id = sp.task_id
             WHERE sp.stage_name = 'speaker'
               AND sp.sub_stage = %s
@@ -1059,11 +1059,11 @@ def mark_ppt_dialogue_failed(task_id: str, message: str) -> None:
 def get_task(task_id: str) -> dict[str, Any] | None:
     with connect() as conn:
         cur = _dict_cursor(conn)
-        cur.execute("SELECT task_id AS id FROM video_info WHERE task_id = %s", (task_id,))
+        cur.execute("SELECT task_id AS id FROM task_info WHERE task_id = %s", (task_id,))
         task = cur.fetchone()
         if not task:
             return None
-        task["video_info"] = video_info.get(task_id)
+        task["task_info"] = task_info.get(task_id)
         return task
 
 
@@ -1082,7 +1082,7 @@ def find_ready(stage_name: str) -> dict[str, Any] | None:
             """,
             (stage_name, READY),
         )
-        return video_info.merge_into(cur.fetchone())
+        return task_info.merge_into(cur.fetchone())
 
 
 def find_ready_speaker_segment() -> dict[str, Any] | None:
@@ -1094,7 +1094,7 @@ def find_ready_speaker_segment() -> dict[str, Any] | None:
             SELECT seg.id, seg.task_id, seg.item_index
             FROM speaker_segment seg FORCE INDEX (idx_speaker_segment_status_task_item)
             JOIN task t ON t.id = seg.task_id
-            JOIN video_info vi ON vi.task_id = seg.task_id
+            JOIN task_info vi ON vi.task_id = seg.task_id
             JOIN distributor_task_stages sp
               ON sp.task_id = seg.task_id
              AND sp.stage_name = 'speaker'
@@ -1139,7 +1139,7 @@ def find_ready_speaker_segment() -> dict[str, Any] | None:
                    vi.translation_json_path AS translation_json_path
             FROM speaker_segment seg
             JOIN task t ON t.id = seg.task_id
-            JOIN video_info vi ON vi.task_id = seg.task_id
+            JOIN task_info vi ON vi.task_id = seg.task_id
             JOIN distributor_task_stages sp
               ON sp.task_id = seg.task_id
              AND sp.stage_name = 'speaker'
@@ -1187,7 +1187,7 @@ def find_ready_speaker_segment() -> dict[str, Any] | None:
                 RUNNING,
             ),
         )
-        return video_info.merge_into(cur.fetchone())
+        return task_info.merge_into(cur.fetchone())
 
 
 def claim_speaker_segment(segment_id: int) -> dict[str, Any] | None:
@@ -1198,7 +1198,7 @@ def claim_speaker_segment(segment_id: int) -> dict[str, Any] | None:
         cur.execute(
             """
             UPDATE speaker_segment seg
-            JOIN video_info vi ON vi.task_id = seg.task_id
+            JOIN task_info vi ON vi.task_id = seg.task_id
             JOIN distributor_task_stages sp
               ON sp.task_id = seg.task_id
              AND sp.stage_name = 'speaker'
@@ -1247,7 +1247,7 @@ def claim_speaker_segment(segment_id: int) -> dict[str, Any] | None:
             JOIN distributor_task_stages sp
               ON sp.task_id = seg.task_id
              AND sp.stage_name = 'speaker'
-            JOIN video_info vi ON vi.task_id = seg.task_id
+            JOIN task_info vi ON vi.task_id = seg.task_id
             WHERE seg.id = %s
             """,
             (segment_id,),
@@ -1267,7 +1267,7 @@ def claim_speaker_segment(segment_id: int) -> dict[str, Any] | None:
                 (RUNNING, operator, row["task_id"], row["speaker_sub_stage"], READY),
             )
         conn.commit()
-        return video_info.merge_into(row)
+        return task_info.merge_into(row)
 
 
 def list_speaker_segments(task_id: str) -> list[dict[str, Any]]:
@@ -1300,7 +1300,7 @@ def get_speaker_segment(task_id: str, item_index: int) -> dict[str, Any] | None:
                    vi.audio_vocals_path AS speaker_audio_vocals_path,
                    vi.translation_json_path AS translation_json_path
             FROM speaker_segment seg
-            JOIN video_info vi ON vi.task_id = seg.task_id
+            JOIN task_info vi ON vi.task_id = seg.task_id
             JOIN distributor_task_stages sp
               ON sp.task_id = seg.task_id
              AND sp.stage_name = 'speaker'
@@ -1324,7 +1324,7 @@ def get_speaker_segment(task_id: str, item_index: int) -> dict[str, Any] | None:
                 item_index,
             ),
         )
-        return video_info.merge_into(cur.fetchone())
+        return task_info.merge_into(cur.fetchone())
 
 
 def list_reference_segments(task_id: str) -> list[dict[str, Any]]:
@@ -1494,7 +1494,7 @@ def recycle_stale_speaker_segments() -> tuple[int, list[str]]:
             """
             SELECT DISTINCT seg.task_id
             FROM speaker_segment seg
-            JOIN video_info vi ON vi.task_id = seg.task_id
+            JOIN task_info vi ON vi.task_id = seg.task_id
             WHERE seg.status = %s
               AND seg.attempt_count >= seg.max_attempts
               AND seg.started_at IS NOT NULL
@@ -1509,7 +1509,7 @@ def recycle_stale_speaker_segments() -> tuple[int, list[str]]:
         cur.execute(
             """
             UPDATE speaker_segment seg
-            JOIN video_info vi ON vi.task_id = seg.task_id
+            JOIN task_info vi ON vi.task_id = seg.task_id
             SET seg.status = %s,
                 seg.error_message = CASE WHEN vi.task_type = 'narration' THEN %s ELSE %s END,
                 seg.started_at = NULL,
@@ -1534,7 +1534,7 @@ def recycle_stale_speaker_segments() -> tuple[int, list[str]]:
         cur.execute(
             """
             UPDATE speaker_segment seg
-            JOIN video_info vi ON vi.task_id = seg.task_id
+            JOIN task_info vi ON vi.task_id = seg.task_id
             SET seg.status = %s,
                 seg.error_message = CASE WHEN vi.task_type = 'narration' THEN %s ELSE %s END,
                 seg.completed_at = NOW()
@@ -1559,7 +1559,7 @@ def recycle_stale_speaker_segments() -> tuple[int, list[str]]:
             """
             SELECT DISTINCT seg.task_id
             FROM speaker_segment seg
-            JOIN video_info vi ON vi.task_id = seg.task_id
+            JOIN task_info vi ON vi.task_id = seg.task_id
             JOIN distributor_task_stages sp
               ON sp.task_id = seg.task_id
              AND sp.stage_name = 'speaker'
@@ -1593,7 +1593,7 @@ def recycle_stale_speaker_segments() -> tuple[int, list[str]]:
         cur.execute(
             """
             UPDATE speaker_segment seg
-            JOIN video_info vi ON vi.task_id = seg.task_id
+            JOIN task_info vi ON vi.task_id = seg.task_id
             JOIN distributor_task_stages sp
               ON sp.task_id = seg.task_id
              AND sp.stage_name = 'speaker'
@@ -1643,15 +1643,15 @@ def recycle_stale_speaker_segments() -> tuple[int, list[str]]:
                   AND sp.stage_name = 'speaker'
                   AND sp.sub_stage = CASE
                         WHEN EXISTS (
-                          SELECT 1 FROM video_info vi
+                          SELECT 1 FROM task_info vi
                           WHERE vi.task_id = sp.task_id AND vi.task_type = 'narration'
                         ) THEN %s
                         WHEN EXISTS (
-                          SELECT 1 FROM video_info vi
+                          SELECT 1 FROM task_info vi
                           WHERE vi.task_id = sp.task_id AND vi.task_type IN (%s, %s)
                         ) THEN %s
                         WHEN EXISTS (
-                          SELECT 1 FROM video_info vi
+                          SELECT 1 FROM task_info vi
                           WHERE vi.task_id = sp.task_id AND vi.task_type = 'ppt'
                         ) THEN %s
                         ELSE %s
@@ -1698,7 +1698,7 @@ def find_finalizable_speaker_task(task_id: str | None = None) -> dict[str, Any] 
             f"""
             SELECT sp.*
             FROM distributor_task_stages sp
-            JOIN video_info vi ON vi.task_id = sp.task_id
+            JOIN task_info vi ON vi.task_id = sp.task_id
             LEFT JOIN distributor_task_stages tr ON tr.task_id = sp.task_id AND tr.stage_name = 'translator' AND tr.sub_stage = 'main'
             WHERE sp.stage_name = %s
               AND sp.status IN (%s, %s)
@@ -1723,7 +1723,7 @@ def find_finalizable_speaker_task(task_id: str | None = None) -> dict[str, Any] 
             """,
             params,
         )
-        return video_info.merge_into(cur.fetchone())
+        return task_info.merge_into(cur.fetchone())
 
 
 def find_terminal_failed_speaker_task(task_id: str | None = None) -> dict[str, Any] | None:
@@ -1764,7 +1764,7 @@ def find_terminal_failed_speaker_task(task_id: str | None = None) -> dict[str, A
                        'one or more speaker segments failed'
                    ) AS error_message
             FROM distributor_task_stages sp
-            JOIN video_info vi ON vi.task_id = sp.task_id
+            JOIN task_info vi ON vi.task_id = sp.task_id
             WHERE sp.stage_name = %s
               AND sp.status IN (%s, %s)
               AND (
@@ -1868,7 +1868,7 @@ def set_combiner_speaker_inputs(
     translation_json_path: str,
     tts_segments_dir: str,
 ) -> None:
-    video_info.upsert(
+    task_info.upsert(
         task_id,
         {
             "translation_json_path": translation_json_path,
@@ -1895,7 +1895,7 @@ def mark_success(
 
     with connect() as conn:
         cur = conn.cursor()
-        video_info.upsert(task_id, fields, cur)
+        task_info.upsert(task_id, fields, cur)
         cur.execute(
             f"UPDATE {table} SET {', '.join(assignments)} WHERE task_id = %s AND stage_name = %s AND sub_stage = %s",
             tuple(values),
