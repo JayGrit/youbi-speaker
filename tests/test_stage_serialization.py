@@ -218,8 +218,8 @@ class StageSerializationTest(unittest.TestCase):
         with (
             patch.object(db, "connect", return_value=FakeConnection(cursor)),
             patch.object(db, "ensure_speaker_segment_schema"),
-            patch.object(db.video_info, "ensure_schema"),
-            patch.object(db.video_info, "merge_into", side_effect=lambda row: row),
+            patch.object(db.task_info, "ensure_schema"),
+            patch.object(db.task_info, "merge_into", side_effect=lambda row: row),
         ):
             self.assertIsNone(db.find_ready_speaker_segment())
 
@@ -238,8 +238,8 @@ class StageSerializationTest(unittest.TestCase):
         with (
             patch.object(db, "connect", return_value=FakeConnection(cursor)),
             patch.object(db, "ensure_speaker_segment_schema"),
-            patch.object(db.video_info, "ensure_schema"),
-            patch.object(db.video_info, "merge_into", side_effect=lambda row: row),
+            patch.object(db.task_info, "ensure_schema"),
+            patch.object(db.task_info, "merge_into", side_effect=lambda row: row),
             patch.object(db, "_ensure_staged_account_columns_cur"),
         ):
             self.assertIsNone(db.find_ready_speaker_segment())
@@ -266,8 +266,8 @@ class StageSerializationTest(unittest.TestCase):
         with (
             patch.object(db, "connect", return_value=FakeConnection(cursor)),
             patch.object(db, "ensure_speaker_segment_schema"),
-            patch.object(db.video_info, "ensure_schema"),
-            patch.object(db.video_info, "merge_into", side_effect=lambda row: row),
+            patch.object(db.task_info, "ensure_schema"),
+            patch.object(db.task_info, "merge_into", side_effect=lambda row: row),
         ):
             self.assertIsNone(db.find_ready_speaker_segment())
 
@@ -290,7 +290,7 @@ class StageSerializationTest(unittest.TestCase):
         cursor = FakeCursor()
         with (
             patch.object(db, "connect", return_value=FakeConnection(cursor)),
-            patch.object(db.video_info, "ensure_schema"),
+            patch.object(db.task_info, "ensure_schema"),
             patch.object(db, "_ensure_operator_columns"),
             patch.object(db, "_operator_value", return_value="MY_HP"),
         ):
@@ -387,7 +387,7 @@ class StageSerializationTest(unittest.TestCase):
         with (
             patch.object(db, "connect", return_value=FakeConnection(cursor)),
             patch.object(db, "ensure_speaker_segment_schema"),
-            patch.object(db.video_info, "merge_into", side_effect=lambda row: row),
+            patch.object(db.task_info, "merge_into", side_effect=lambda row: row),
         ):
             self.assertIsNone(db.find_finalizable_speaker_task("narration-7"))
 
