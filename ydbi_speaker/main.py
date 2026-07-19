@@ -102,8 +102,6 @@ def _input_refs(row: dict) -> tuple[tuple[str, str], ...]:
     refs: list[tuple[str, str]] = []
     for key, label in (
         ("audio_vocals_url", "vocals url"),
-        ("audio_vocals_path", "vocals path"),
-        ("speaker_audio_vocals_path", "speaker vocals path"),
     ):
         value = str(row.get(key) or "").strip()
         if value:
@@ -111,7 +109,6 @@ def _input_refs(row: dict) -> tuple[tuple[str, str], ...]:
 
     for key, label in (
         ("audio_source_url", "source audio url"),
-        ("audio_source_path", "source audio path"),
     ):
         value = str(row.get(key) or "").strip()
         if value:

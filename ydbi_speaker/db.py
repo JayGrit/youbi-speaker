@@ -1135,7 +1135,6 @@ def find_ready_speaker_segment() -> dict[str, Any] | None:
                    COALESCE(t.priority, 1) AS task_priority,
                    vi.task_type AS task_type,
                    sp.sub_stage AS speaker_sub_stage,
-                   vi.audio_vocals_path AS speaker_audio_vocals_path,
                    vi.translation_json_path AS translation_json_path
             FROM speaker_segment seg
             JOIN task t ON t.id = seg.task_id
@@ -1241,7 +1240,6 @@ def claim_speaker_segment(segment_id: int) -> dict[str, Any] | None:
             SELECT seg.*,
                    vi.task_type AS task_type,
                    sp.sub_stage AS speaker_sub_stage,
-                   vi.audio_vocals_path AS speaker_audio_vocals_path,
                    vi.translation_json_path AS translation_json_path
             FROM speaker_segment seg
             JOIN distributor_task_stages sp
@@ -1297,7 +1295,6 @@ def get_speaker_segment(task_id: str, item_index: int) -> dict[str, Any] | None:
             SELECT seg.*,
                    vi.task_type AS task_type,
                    sp.sub_stage AS speaker_sub_stage,
-                   vi.audio_vocals_path AS speaker_audio_vocals_path,
                    vi.translation_json_path AS translation_json_path
             FROM speaker_segment seg
             JOIN task_info vi ON vi.task_id = seg.task_id
