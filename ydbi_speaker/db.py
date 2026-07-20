@@ -33,6 +33,14 @@ _heartbeat_schema_ready = False
 _speaker_stage_schema_ready = False
 READY_SPEAKER_SEGMENT_CANDIDATE_LIMIT = 2000
 MYSQL_NETWORK_ERROR_CODES = {2002, 2003, 2005, 2013, 2055}
+SPEAKER_TASK_INFO_FIELDS = {
+    "task_type",
+    "target_language",
+    "audio_vocals_url",
+    "audio_source_url",
+    "translation_json_path",
+    "tts_segments_dir",
+}
 
 
 def is_mysql_connection_error(exc: BaseException) -> bool:
@@ -1065,7 +1073,7 @@ def get_task(task_id: str) -> dict[str, Any] | None:
             return None
         task["task_info"] = task_info.get(
             task_id,
-            fields={"task_type", "target_language", "audio_vocals_url", "translation_json_path", "tts_segments_dir"},
+            fields=SPEAKER_TASK_INFO_FIELDS,
         )
         return task
 
@@ -1087,7 +1095,7 @@ def find_ready(stage_name: str) -> dict[str, Any] | None:
         )
         return task_info.merge_into(
             cur.fetchone(),
-            fields={"task_type", "target_language", "audio_vocals_url", "translation_json_path", "tts_segments_dir"},
+            fields=SPEAKER_TASK_INFO_FIELDS,
         )
 
 
@@ -1195,7 +1203,7 @@ def find_ready_speaker_segment() -> dict[str, Any] | None:
         )
         return task_info.merge_into(
             cur.fetchone(),
-            fields={"task_type", "target_language", "audio_vocals_url", "translation_json_path", "tts_segments_dir"},
+            fields=SPEAKER_TASK_INFO_FIELDS,
         )
 
 
@@ -1278,7 +1286,7 @@ def claim_speaker_segment(segment_id: int) -> dict[str, Any] | None:
         conn.commit()
         return task_info.merge_into(
             row,
-            fields={"task_type", "target_language", "audio_vocals_url", "translation_json_path", "tts_segments_dir"},
+            fields=SPEAKER_TASK_INFO_FIELDS,
         )
 
 
@@ -1338,7 +1346,7 @@ def get_speaker_segment(task_id: str, item_index: int) -> dict[str, Any] | None:
         )
         return task_info.merge_into(
             cur.fetchone(),
-            fields={"task_type", "target_language", "audio_vocals_url", "translation_json_path", "tts_segments_dir"},
+            fields=SPEAKER_TASK_INFO_FIELDS,
         )
 
 
@@ -1740,7 +1748,7 @@ def find_finalizable_speaker_task(task_id: str | None = None) -> dict[str, Any] 
         )
         return task_info.merge_into(
             cur.fetchone(),
-            fields={"task_type", "target_language", "audio_vocals_url", "translation_json_path", "tts_segments_dir"},
+            fields=SPEAKER_TASK_INFO_FIELDS,
         )
 
 
