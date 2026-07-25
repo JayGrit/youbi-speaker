@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import os
 import json
+import socket
+import uuid
 from collections.abc import Mapping
 from typing import Any
 
@@ -15,13 +17,12 @@ from .config import (
 )
 from .service import FAILED, READY, RUNNING, SERVICE_NAME, SERVICE_TABLE, SUCCESS
 
-HEARTBEAT_TABLE = "service_heartbeat"
+HEARTBEAT_TABLE = "service_instance_heartbeat"
 SUBMISSION_TABLE = "downloader_submission"
 UPLOADER_ACCOUNT_TABLE = "uploader_account"
 UPLOAD_SUBMISSION_TABLES = (
     "uploader_task",
 )
-HEARTBEAT_DEVICE_COLUMNS = ("Macbook Air M4", "Macmini M2", "LPXB", "MY_HP", "LPXB_HP", "TXY")
 PRODUCT_NARRATION_SENTENCE_TABLE = "product_narration_sentence"
 PRODUCT_BLESSING_TABLE = "product_blessing"
 PRODUCT_PPT_TABLE = "product_ppt"
@@ -29,7 +30,6 @@ ASSETS_TABLE = "asseter_static"
 MAX_NARRATION_SEGMENT_CHARS = 500
 OPERATOR_COLUMN = "operator"
 OPERATOR_COLUMN_DEFINITION = "VARCHAR(128) NULL"
-_heartbeat_schema_ready = False
 _speaker_stage_schema_ready = False
 READY_SPEAKER_SEGMENT_CANDIDATE_LIMIT = 2000
 MYSQL_NETWORK_ERROR_CODES = {2002, 2003, 2005, 2013, 2055}
@@ -271,9 +271,20 @@ def _ensure_speaker_stage_schema_cur(cur) -> None:
         (SPEAKER_PPT_DIALOGUE_SUB_STAGE, SPEAKER_MAIN_SUB_STAGE),
     )
 
-def _heartbeat_device_column() -> str | None:
-    device = os.environ.get("DEVICE", "").strip() or "Macbook Air M4"
-    return device if device in HEARTBEAT_DEVICE_COLUMNS else None
+_HEARTBEAT_INSTANCE_ID: str | None = None
+
+
+def _heartbeat_device_name() -> str:
+    return os.environ.get("DEVICE", "").strip() or "Macbook Air M4"
+
+
+def _heartbeat_instance_id(stage_name: str) -> str:
+    global _HEARTBEAT_INSTANCE_ID
+    if _HEARTBEAT_INSTANCE_ID is None:
+        _HEARTBEAT_INSTANCE_ID = (
+            f"{stage_name}:{_heartbeat_device_name()}:{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:12]}"
+        )
+    return _HEARTBEAT_INSTANCE_ID
 
 
 def _operator_value() -> str:
@@ -306,27 +317,29 @@ def _ensure_operator_columns(cur, tables: tuple[str, ...]) -> None:
     return
 
 
-def ensure_service_heartbeat_schema() -> None:
-    global _heartbeat_schema_ready
-    _heartbeat_schema_ready = True
-
-
 def record_service_poll(stage_name: str) -> None:
-    column = _heartbeat_device_column()
-    if not column:
-        return
-
-    ensure_service_heartbeat_schema()
-    quoted_column = _quote_identifier(column)
+    device = _heartbeat_device_name()
     with connect() as conn:
         cur = conn.cursor()
         cur.execute(
-            f"""
-            INSERT INTO {HEARTBEAT_TABLE} (service_name, {quoted_column})
-            VALUES (%s, NOW())
-            ON DUPLICATE KEY UPDATE {quoted_column} = VALUES({quoted_column})
+            """
+            INSERT INTO service_instance_heartbeat (
+                service_name, instance_id, device_name, host_name, process_id,
+                runtime_role, status, last_seen_at, heartbeat_interval_seconds,
+                metadata_json, started_at
+            )
+            VALUES (%s, %s, %s, %s, %s, 'worker', 'running', NOW(), 10, JSON_OBJECT('source', 'service_worker'), NOW())
+            ON DUPLICATE KEY UPDATE
+                device_name = VALUES(device_name),
+                host_name = VALUES(host_name),
+                process_id = VALUES(process_id),
+                runtime_role = VALUES(runtime_role),
+                status = VALUES(status),
+                last_seen_at = VALUES(last_seen_at),
+                heartbeat_interval_seconds = VALUES(heartbeat_interval_seconds),
+                metadata_json = VALUES(metadata_json)
             """,
-            (stage_name,),
+            (stage_name, _heartbeat_instance_id(stage_name), device, socket.gethostname(), os.getpid()),
         )
         conn.commit()
 
