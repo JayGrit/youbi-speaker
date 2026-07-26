@@ -20,7 +20,6 @@ def claim_speaker_segment(segment_id: int) -> dict[str, _core.Any] | None:
     operator = _core._operator_value()
     with _core.connect() as conn:
         cur = conn.cursor()
-        _core._ensure_operator_columns(cur, ('speaker', 'speaker_segment'))
         cur.execute("\n            UPDATE speaker_segment seg\n            JOIN task vi ON vi.id = seg.task_id\n            JOIN distributor_task_stages sp\n              ON sp.task_id = seg.task_id\n             AND sp.stage_name = 'speaker'\n             AND sp.sub_stage = CASE\n                   WHEN vi.task_type = 'narration' THEN %s\n                   WHEN vi.task_type IN (%s, %s) THEN %s\n                   WHEN vi.task_type = 'ppt' THEN %s\n                   ELSE %s\n                 END\n            SET seg.status = %s,\n                seg.attempt_count = seg.attempt_count + 1,\n                seg.started_at = COALESCE(seg.started_at, NOW()),\n                seg.error_message = NULL,\n                seg.`operator` = %s\n            WHERE seg.id = %s\n              AND seg.status = %s\n              AND sp.status IN (%s, %s)\n            ", (_core.SPEAKER_NARRATION_SUB_STAGE, *_core.CHUNK_SPEAKER_TASK_TYPES, _core.SPEAKER_DUBBING_MULTI_SEGMENT_SUB_STAGE, _core.SPEAKER_PPT_DIALOGUE_SUB_STAGE, _core.SPEAKER_MAIN_SUB_STAGE, _core.SEGMENT_RUNNING, operator, segment_id, _core.SEGMENT_READY, _core.READY, _core.RUNNING))
         if cur.rowcount != 1:
             conn.commit()

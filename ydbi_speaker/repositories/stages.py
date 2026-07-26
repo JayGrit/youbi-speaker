@@ -24,7 +24,6 @@ def mark_running(stage_name: str, task_id: str, sub_stage: str=_core.SPEAKER_MAI
     operator = _core._operator_value()
     with _core.connect() as conn:
         cur = conn.cursor()
-        _core._ensure_operator_columns(cur, (table,))
         cur.execute(f'\n            UPDATE {table}\n            SET status = %s,\n                started_at = COALESCE(started_at, NOW()),\n                error_message = NULL,\n                `operator` = %s\n            WHERE task_id = %s AND stage_name = %s AND sub_stage = %s AND status = %s\n            ', (_core.RUNNING, operator, task_id, stage_name, sub_stage, _core.READY))
         stage_updated = cur.rowcount == 1
         conn.commit()

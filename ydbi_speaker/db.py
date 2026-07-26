@@ -112,8 +112,6 @@ def _operator_value() -> str:
 def current_operator() -> str:
     return _operator_value()
 
-def _ensure_operator_columns(cur, tables: tuple[str, ...]) -> None:
-    return
 
 def record_service_poll(stage_name: str) -> None:
     device = _heartbeat_device_name()
