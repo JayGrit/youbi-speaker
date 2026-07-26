@@ -688,8 +688,6 @@ def _claim_ready_segments(
 
 def run_segment_worker() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    db.ensure_speaker_segment_schema()
-    db.ensure_speaker_profile_schema()
     max_inflight = max(1, SPEAKER_MAX_IN_FLIGHT_SEGMENTS)
     tts_concurrency = max(1, SPEAKER_TTS_CONCURRENCY)
     log.info(

@@ -1,0 +1,1 @@
+"""Speaker repositories boundaries."""
