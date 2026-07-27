@@ -21,6 +21,7 @@ MAX_NARRATION_SEGMENT_CHARS = 500
 OPERATOR_COLUMN = 'operator'
 OPERATOR_COLUMN_DEFINITION = 'VARCHAR(128) NULL'
 _speaker_stage_schema_ready = False
+_HEARTBEAT_INSTANCE_ID: str | None = None
 READY_SPEAKER_SEGMENT_CANDIDATE_LIMIT = 2000
 MYSQL_NETWORK_ERROR_CODES = {2002, 2003, 2005, 2013, 2055}
 SPEAKER_TASK_INFO_FIELDS = {'task_type', 'target_language', 'audio_vocals_url', 'audio_source_url', 'translation_json_path', 'tts_segments_dir'}
