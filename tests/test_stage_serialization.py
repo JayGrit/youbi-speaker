@@ -137,6 +137,13 @@ class DubbingMultiSegmentInitCursor(InitCursor):
             return result
         return None
 
+    def fetchall(self):
+        return [
+            {'chunk_index': 0, 'chunk_text': 'source one', 'src_text': None, 'dst_text': 'target one', 'src_lang': 'en', 'dst_lang': 'zh', 'start_time': 0, 'end_time': 1, 'speaker': 'Alice'},
+            {'chunk_index': 0, 'chunk_text': 'source two', 'src_text': 'source two edited', 'dst_text': 'target two', 'src_lang': 'en', 'dst_lang': 'zh', 'start_time': 1, 'end_time': 2, 'speaker': 'Bob'},
+            {'chunk_index': 1, 'chunk_text': 'source three', 'src_text': 'source three', 'dst_text': 'target three', 'src_lang': 'en', 'dst_lang': 'zh', 'start_time': 2, 'end_time': 3, 'speaker': 'Bob'},
+        ]
+
 class DubbingChunkAlignedInitCursor(DubbingMultiSegmentInitCursor):
     task_id = 'task-chunk-aligned'
     task_type = db.TASK_TYPE_DUBBING_CHUNK_ALIGNED
@@ -158,20 +165,18 @@ class StageSerializationTest(unittest.TestCase):
             initialized = db.initialize_ready_speaker_task()
         self.assertEqual(('task-multi', 2), initialized)
         self.assertIn('vi.task_type IN (%s, %s)', cursor.select_sql)
-        self.assertIn('FROM `translator_chunk` tc', cursor.sql)
-        self.assertIn('tc.chunk_index AS item_index', cursor.sql)
-        self.assertIn('MIN(tc.chunk_start_time) AS start_time', cursor.sql)
-        self.assertIn('MAX(tc.chunk_end_time) AS end_time', cursor.sql)
-        self.assertEqual((db.SEGMENT_READY, 'task-multi'), cursor.params)
+        self.assertIn('INSERT INTO speaker_segment', cursor.sql)
+        self.assertEqual('source one\nsource two edited', cursor.params[0][3])
+        self.assertEqual('target one\ntarget two', cursor.params[0][4])
+        self.assertEqual((0, 2, 'Alice'), (cursor.params[0][7], cursor.params[0][8], cursor.params[0][9]))
 
     def test_dubbing_chunk_aligned_creates_segments_from_translator_chunks(self) -> None:
         cursor = DubbingChunkAlignedInitCursor()
         with patch.object(db, 'connect', return_value=FakeConnection(cursor)):
             initialized = db.initialize_ready_speaker_task()
         self.assertEqual(('task-chunk-aligned', 2), initialized)
-        self.assertIn('FROM `translator_chunk` tc', cursor.sql)
-        self.assertIn('tc.chunk_index AS item_index', cursor.sql)
-        self.assertEqual((db.SEGMENT_READY, 'task-chunk-aligned'), cursor.params)
+        self.assertIn('INSERT INTO speaker_segment', cursor.sql)
+        self.assertEqual('task-chunk-aligned', cursor.params[0][0])
 
     def test_ready_segment_query_uses_task_priority_without_translator_gate(self) -> None:
         cursor = FakeCursor()

@@ -58,6 +58,35 @@ def _build_ppt_dialogue_segments(raw_json: str) -> list[dict[str, _core.Any]]:
         segments.append({'speaker': speaker, 'content': content})
     return segments
 
+def _build_chunk_speaker_segments(rows: list[dict[str, _core.Any]]) -> list[tuple[_core.Any, ...]]:
+    grouped: dict[int, dict[str, _core.Any]] = {}
+    for row in rows:
+        chunk_index = int(row['chunk_index'])
+        segment = grouped.setdefault(chunk_index, {
+            'src_text': [], 'dst_text': [], 'src_lang': [], 'dst_lang': [],
+            'start_time': [], 'end_time': [], 'speaker': None,
+        })
+        raw_src_text = row.get('src_text')
+        src_text = str(row.get('chunk_text') if raw_src_text is None else raw_src_text).strip()
+        dst_text = str(row.get('dst_text') or '').strip()
+        if src_text:
+            segment['src_text'].append(src_text)
+        if dst_text:
+            segment['dst_text'].append(dst_text)
+        for field in ('src_lang', 'dst_lang', 'start_time', 'end_time'):
+            if row.get(field) is not None:
+                segment[field].append(row[field])
+        speaker = str(row.get('speaker') or '').strip()
+        if speaker and segment['speaker'] is None:
+            segment['speaker'] = speaker
+    return [
+        (chunk_index, '\n'.join(segment['src_text']), '\n'.join(segment['dst_text']),
+         min(segment['src_lang'], default=None), max(segment['dst_lang'], default=None),
+         min(segment['start_time'], default=None), max(segment['end_time'], default=None),
+         segment['speaker'])
+        for chunk_index, segment in grouped.items()
+    ]
+
 def initialize_ready_speaker_task() -> tuple[str, int] | None:
     with _core.connect() as conn:
         conn.start_transaction()
@@ -85,8 +114,11 @@ def initialize_ready_speaker_task() -> tuple[str, int] | None:
             return (task_id, inserted)
         if row.get('sub_stage') == _core.SPEAKER_DUBBING_MULTI_SEGMENT_SUB_STAGE:
             chunk_table = _core._quote_identifier(_core._translator_chunk_table_cur(cur))
-            cur.execute(f"\n                INSERT INTO speaker_segment\n                  (\n                    task_id, item_index, status, src_text, dst_text, src_lang, dst_lang,\n                    start_time, end_time, speaker\n                  )\n                SELECT\n                  tc.task_id,\n                  tc.chunk_index AS item_index,\n                  %s AS status,\n                  COALESCE(GROUP_CONCAT(NULLIF(TRIM(COALESCE(ts.src_text, tc.text)), '') ORDER BY tc.row_order SEPARATOR '\\n'), '') AS src_text,\n                  COALESCE(GROUP_CONCAT(NULLIF(TRIM(ts.dst_text), '') ORDER BY tc.row_order SEPARATOR '\\n'), '') AS dst_text,\n                  MIN(ts.src_lang) AS src_lang,\n                  MAX(ts.dst_lang) AS dst_lang,\n                  MIN(tc.chunk_start_time) AS start_time,\n                  MAX(tc.chunk_end_time) AS end_time,\n                  SUBSTRING_INDEX(GROUP_CONCAT(NULLIF(ts.speaker, '') ORDER BY tc.row_order SEPARATOR ','), ',', 1) AS speaker\n                FROM {chunk_table} tc\n                JOIN {_core.TRANSLATOR_SEGMENT_TABLE} ts\n                  ON ts.task_id = tc.task_id\n                 AND ts.item_index = tc.item_index\n                WHERE tc.task_id = %s\n                  AND tc.row_role = 'normal'\n                GROUP BY tc.task_id, tc.chunk_index\n                ORDER BY tc.chunk_index ASC\n                ", (_core.SEGMENT_READY, task_id))
-            inserted = int(cur.rowcount)
+            chunk_cur = _core._dict_cursor(conn)
+            chunk_cur.execute(f"\n                SELECT tc.chunk_index, tc.text AS chunk_text, ts.src_text, ts.dst_text,\n                       ts.src_lang, ts.dst_lang, tc.chunk_start_time AS start_time,\n                       tc.chunk_end_time AS end_time, ts.speaker\n                FROM {chunk_table} tc\n                JOIN {_core.TRANSLATOR_SEGMENT_TABLE} ts\n                  ON ts.task_id = tc.task_id\n                 AND ts.item_index = tc.item_index\n                WHERE tc.task_id = %s\n                  AND tc.row_role = 'normal'\n                ORDER BY tc.chunk_index ASC, tc.row_order ASC\n                ", (task_id,))
+            segments = _build_chunk_speaker_segments(list(chunk_cur.fetchall()))
+            cur.executemany("\n                INSERT INTO speaker_segment\n                  (task_id, item_index, status, src_text, dst_text, src_lang, dst_lang,\n                   start_time, end_time, speaker)\n                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)\n                ", [(task_id, item_index, _core.SEGMENT_READY, src_text, dst_text, src_lang, dst_lang, start_time, end_time, speaker) for item_index, src_text, dst_text, src_lang, dst_lang, start_time, end_time, speaker in segments])
+            inserted = len(segments)
             conn.commit()
             return (task_id, inserted)
         cur.execute(f'\n            INSERT INTO speaker_segment\n              (\n                task_id, item_index, status, src_text, dst_text, src_lang, dst_lang,\n                start_time, end_time, speaker\n              )\n            SELECT\n              task_id, item_index, %s, src_text, dst_text, src_lang, dst_lang,\n              start_time, end_time, speaker\n            FROM {_core.TRANSLATOR_SEGMENT_TABLE}\n            WHERE task_id = %s\n            ORDER BY item_index ASC\n            ', (_core.SEGMENT_READY, task_id))
