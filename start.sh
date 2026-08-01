@@ -16,12 +16,10 @@ export VOXCPM_MODEL_DIR="${VOXCPM_MODEL_DIR:-$MODELSCOPE_CACHE/VoxCPM2}"
 
 mkdir -p "$WORKFOLDER/speaker" "$MODELSCOPE_CACHE"
 
-if [[ -x "$SCRIPT_DIR/.venv/bin/ydbi-speaker" ]]; then
-  exec "$SCRIPT_DIR/.venv/bin/ydbi-speaker"
+PYTHON="${YOUBI_PYTHON:-/Users/hoshuuch/Money/YouBi/.venv/bin/python}"
+if [[ ! -x "$PYTHON" ]]; then
+  echo "YouBi Python environment was not found: $PYTHON" >&2
+  exit 1
 fi
 
-if [[ -x "$SCRIPT_DIR/.venv/bin/python" ]]; then
-  exec "$SCRIPT_DIR/.venv/bin/python" -m ydbi_speaker.main
-fi
-
-exec python -m ydbi_speaker.main
+exec "$PYTHON" -m ydbi_speaker.main
